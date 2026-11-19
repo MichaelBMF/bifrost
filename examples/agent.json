@@ -1,0 +1,18 @@
+{
+  "relay": "relay.example.net:443",
+  "relay_pin": "<relay pin from the relay log>",
+  "relay_wg_endpoint": "relay.example.net:51820",
+  "relay_wg_pub": "<relay WireGuard key from the relay log>",
+  "relay_tunnel_ip": "10.8.0.1",
+  "control_port": 7000,
+  "tunnel_ip": "10.8.0.2",
+  "stream_port": 9000,
+  "agent_id": "homelab",
+  "key_file": "/var/lib/hlr/agent.key",
+  "state_file": "/var/lib/hlr/devices.json",
+  "admin": "127.0.0.1:7070",
+  "services": {
+    "mqtt": "127.0.0.1:1883",
+    "ha": "192.168.10.20:8123"
+  }
+}
