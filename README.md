@@ -9,7 +9,7 @@ Prototype for the "Home Lab Relay: Architecture" design, variant **v2**:
 - **iPhone ↔ home lab:** end-to-end with Noise (`Noise_IK`, `Noise_IKpsk2` for pairing).
   The VPS only ever sees ciphertext.
 
-> Prototype: not audited, not meant for production. The binary is called `hlr` for now.
+> Prototype: not audited, not meant for production.
 
 ## What's inside
 
@@ -28,7 +28,7 @@ Not yet included: push (APNs/FCM/ntfy), a real mobile app, metrics, P-256 keys i
 ## Build and test
 
 ```sh
-go build -o hlr ./cmd/hlr      # Go 1.23 or newer
+go build -o bifrost ./cmd/bifrost     # Go 1.23 or newer
 go test -race ./...
 ```
 
@@ -40,18 +40,18 @@ closes active connections immediately.
 
 ## Setup
 
-1. Copy `relay.json` from `examples/` to the VPS and start `hlr relay -config relay.json`.
+1. Copy `relay.json` from `examples/` to the VPS and start `bifrost relay -config relay.json`.
    The log shows the **relay pin** and the **relay WireGuard key**. Both go into `agent.json`.
-2. Adjust `agent.json` in the home lab and start `hlr agent -config agent.json`.
+2. Adjust `agent.json` in the home lab and start `bifrost agent -config agent.json`.
    The log shows the **agent WireGuard key**. It goes into `relay.json` under `agents.homelab.wg_pub`.
    Restart the relay.
 3. Open on the VPS: TCP 443 (devices) and UDP 51820 (WireGuard). At home: nothing.
-4. Pair a device: `hlr pair -name iphone -services mqtt` shows a QR code and `hlr1:…`
+4. Pair a device: `bifrost pair -name iphone -services mqtt` shows a QR code and `bifrost1:…`
    (valid for 5 minutes, single use).
-5. Pair the "app": `hlr client pair -state phone -code hlr1:…`.
-6. Open a tunnel: `hlr client forward -state phone -L mqtt=127.0.0.1:11883`,
+5. Pair the "app": `bifrost client pair -state phone -code bifrost1:…`.
+6. Open a tunnel: `bifrost client forward -state phone -L mqtt=127.0.0.1:11883`,
    then e.g. `mosquitto_sub -h 127.0.0.1 -p 11883 -t 'home/#'`.
-7. List and revoke devices: `hlr devices`, `hlr revoke -name iphone`.
+7. List and revoke devices: `bifrost devices`, `bifrost revoke -name iphone`.
 
 Bind the agent's admin API (`admin`) to `127.0.0.1` or the LAN only.
 
