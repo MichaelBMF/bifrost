@@ -40,10 +40,10 @@ closes active connections immediately.
 
 ## Setup
 
-1. Copy `relay.json` from `examples/` to the VPS and start `bifrost relay -config relay.json`.
-   The log shows the **relay pin** and the **relay WireGuard key**. Both go into `agent.json`.
-2. Adjust `agent.json` in the home lab and start `bifrost agent -config agent.json`.
-   The log shows the **agent WireGuard key**. It goes into `relay.json` under `agents.homelab.wg_pub`.
+1. Copy `heimdall.json` from `examples/` to the VPS and start `bifrost heimdall -config heimdall.json`.
+   The log shows the **relay pin** and the **relay WireGuard key**. Both go into `asgard.json`.
+2. Adjust `asgard.json` in the home lab and start `bifrost asgard -config asgard.json`.
+   The log shows the **agent WireGuard key**. It goes into `heimdall.json` under `agents.homelab.wg_pub`.
    Restart the relay.
 3. Open on the VPS: TCP 443 (devices) and UDP 51820 (WireGuard). At home: nothing.
 4. Pair a device: `bifrost pair -name iphone -services mqtt` shows a QR code and `bifrost1:…`
@@ -64,7 +64,7 @@ Bind the agent's admin API (`admin`) to `127.0.0.1` or the LAN only.
 3. VPS → agent: a new TCP connection to `10.8.0.2:9000` inside the tunnel, `StreamHeader{kind, relay_id}`,
    after that bytes are just passed through.
 4. iPhone ↔ agent: Noise_IK. The agent checks that the Noise key and the relay key belong
-   to the same device, then `{"open":"mqtt"}`; the target comes only from `agent.json`.
+   to the same device, then `{"open":"mqtt"}`; the target comes only from `asgard.json`.
 5. Pairing: `Noise_IKpsk2` with the token from the QR code as PSK. The device is stored only after
    the app's first encrypted message.
 

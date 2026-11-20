@@ -3,7 +3,7 @@ Description=Bifrost home lab relay
 After=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/bifrost relay -config /etc/bifrost/relay.json
+ExecStart=/usr/local/bin/bifrost heimdall -config /etc/bifrost/heimdall.json
 DynamicUser=yes
 StateDirectory=bifrost
 AmbientCapabilities=CAP_NET_BIND_SERVICE

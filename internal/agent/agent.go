@@ -119,7 +119,7 @@ func New(cfg *Config) (*Agent, error) {
 			return nil, err
 		}
 	}
-	log.Printf("agent WireGuard key (for relay.json under agents.<id>.wg_pub): %s", id.WGPublic())
+	log.Printf("agent WireGuard key (for heimdall.json under agents.<id>.wg_pub): %s", id.WGPublic())
 	log.Printf("agent fingerprint: %s", keys.Fingerprint(id.Noise.Public))
 	return a, nil
 }

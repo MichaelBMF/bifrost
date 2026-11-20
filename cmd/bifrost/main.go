@@ -1,10 +1,10 @@
 // bifrost: home lab relay prototype (v2).
 //
-//	bifrost relay   -config relay.json
-//	bifrost agent   -config agent.json
-//	bifrost pair    -admin 127.0.0.1:7070 -name iphone -services mqtt,ha
-//	bifrost revoke  -admin 127.0.0.1:7070 -name iphone
-//	bifrost devices -admin 127.0.0.1:7070
+//	bifrost heimdall -config heimdall.json   (relay on the VPS)
+//	bifrost asgard   -config asgard.json     (agent in the home lab)
+//	bifrost pair     -admin 127.0.0.1:7070 -name iphone -services mqtt,ha
+//	bifrost revoke   -admin 127.0.0.1:7070 -name iphone
+//	bifrost devices  -admin 127.0.0.1:7070
 //	bifrost client pair    -state phone -code bifrost1:...
 //	bifrost client forward -state phone -L mqtt=127.0.0.1:11883 [-L ha=127.0.0.1:18123]
 package main
@@ -38,14 +38,14 @@ func main() {
 	cmd, args := os.Args[1], os.Args[2:]
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 	switch cmd {
-	case "relay":
-		cfgPath := fs.String("config", "relay.json", "config file")
+	case "heimdall":
+		cfgPath := fs.String("config", "heimdall.json", "config file")
 		fs.Parse(args)
 		cfg, err := relay.LoadConfig(*cfgPath)
 		check(err)
 		check(relay.New(cfg).Run())
-	case "agent":
-		cfgPath := fs.String("config", "agent.json", "config file")
+	case "asgard":
+		cfgPath := fs.String("config", "asgard.json", "config file")
 		fs.Parse(args)
 		cfg, err := agent.LoadConfig(*cfgPath)
 		check(err)
@@ -123,6 +123,6 @@ func check(err error) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `bifrost relay|agent|pair|revoke|devices|client pair|client forward  (details: README.md)`)
+	fmt.Fprintln(os.Stderr, `bifrost heimdall|asgard|pair|revoke|devices|client pair|client forward  (details: README.md)`)
 	os.Exit(2)
 }

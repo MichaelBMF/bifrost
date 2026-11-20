@@ -109,8 +109,8 @@ func (r *Relay) Run() error {
 	if created {
 		log.Printf("created new relay key in %s", r.cfg.KeyFile)
 	}
-	log.Printf("relay pin (for agent config, relay_pin): %s", id.TLSID())
-	log.Printf("relay WireGuard key (for agent config, relay_wg_pub): %s", id.WGPublic())
+	log.Printf("relay pin (for asgard.json, relay_pin): %s", id.TLSID())
+	log.Printf("relay WireGuard key (for asgard.json, relay_wg_pub): %s", id.WGPublic())
 
 	// In-process WireGuard: each agent is a peer with exactly one allowed address.
 	self, err := netip.ParseAddr(r.cfg.TunnelIP)
