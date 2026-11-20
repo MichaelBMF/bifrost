@@ -116,7 +116,7 @@ func PinnedTLSConfig(cert tls.Certificate, pin string) *tls.Config {
 
 var suite = noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s)
 
-func Prologue(agentID string) []byte { return []byte("hlr/1 " + agentID) }
+func Prologue(agentID string) []byte { return []byte("bifrost/1 " + agentID) }
 
 // SecureConn is a byte stream over Noise transport messages.
 type SecureConn struct {

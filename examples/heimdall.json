@@ -1,6 +1,6 @@
 {
   "listen": ":443",
-  "key_file": "/var/lib/hlr/relay.key",
+  "key_file": "/var/lib/bifrost/relay.key",
   "wg_port": 51820,
   "tunnel_ip": "10.8.0.1",
   "control_port": 7000,

@@ -70,15 +70,15 @@ type PairingCode struct {
 
 func (p PairingCode) String() string {
 	b, _ := json.Marshal(p)
-	return "hlr1:" + base64.RawURLEncoding.EncodeToString(b)
+	return "bifrost1:" + base64.RawURLEncoding.EncodeToString(b)
 }
 
 func ParsePairingCode(s string) (PairingCode, error) {
 	var p PairingCode
-	if !strings.HasPrefix(s, "hlr1:") {
-		return p, errors.New("not an hlr1 code")
+	if !strings.HasPrefix(s, "bifrost1:") {
+		return p, errors.New("not a bifrost1 code")
 	}
-	b, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(s, "hlr1:"))
+	b, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(s, "bifrost1:"))
 	if err != nil {
 		return p, err
 	}
@@ -119,7 +119,7 @@ func New(cfg *Config) (*Agent, error) {
 			return nil, err
 		}
 	}
-	log.Printf("agent WireGuard key (for relay.json under agents.<id>.wg_pub): %s", id.WGPublic())
+	log.Printf("agent WireGuard key (for heimdall.json under agents.<id>.wg_pub): %s", id.WGPublic())
 	log.Printf("agent fingerprint: %s", keys.Fingerprint(id.Noise.Public))
 	return a, nil
 }

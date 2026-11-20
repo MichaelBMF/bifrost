@@ -108,7 +108,7 @@ func (i *Identity) Save(path string) error {
 func (i *Identity) Certificate() (tls.Certificate, error) {
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "hlr"},
+		Subject:      pkix.Name{CommonName: "bifrost"},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(10 * 365 * 24 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
