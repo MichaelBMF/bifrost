@@ -2,6 +2,8 @@
 //
 //	bifrost heimdall -config heimdall.json   (relay on the VPS)
 //	bifrost asgard   -config asgard.json     (agent in the home lab)
+//	bifrost hlidskjalf -config hlidskjalf.json (web UI for devices, next to asgard)
+//	bifrost hlidskjalf -hash                   (bcrypt hash for a UI password)
 //	bifrost pair     -admin 127.0.0.1:7070 -name iphone -services mqtt,ha [-user alice]
 //	bifrost revoke   -admin 127.0.0.1:7070 -name iphone
 //	bifrost devices  -admin 127.0.0.1:7070
@@ -23,6 +25,7 @@ import (
 	"github.com/MichaelBMF/bifrost/internal/agent"
 	"github.com/MichaelBMF/bifrost/internal/client"
 	"github.com/MichaelBMF/bifrost/internal/relay"
+	"github.com/MichaelBMF/bifrost/internal/web"
 	"github.com/mdp/qrterminal/v3"
 )
 
@@ -52,6 +55,19 @@ func main() {
 		a, err := agent.New(cfg)
 		check(err)
 		check(a.Run())
+	case "hlidskjalf":
+		cfgPath := fs.String("config", "hlidskjalf.json", "config file")
+		hash := fs.Bool("hash", false, "read a password from the terminal and print its bcrypt hash")
+		fs.Parse(args)
+		if *hash {
+			h, err := web.HashPasswordInteractive()
+			check(err)
+			fmt.Println(h)
+			return
+		}
+		cfg, err := web.LoadConfig(*cfgPath)
+		check(err)
+		check(web.Run(cfg))
 	case "pair", "revoke", "devices":
 		admin := fs.String("admin", "127.0.0.1:7070", "agent admin address")
 		name := fs.String("name", "", "device name")
@@ -136,6 +152,6 @@ func check(err error) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `bifrost heimdall|asgard|pair|revoke|devices|client pair|client forward  (details: README.md)`)
+	fmt.Fprintln(os.Stderr, `bifrost heimdall|asgard|hlidskjalf|pair|revoke|devices|client pair|client forward  (details: README.md)`)
 	os.Exit(2)
 }

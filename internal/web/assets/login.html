@@ -1,0 +1,15 @@
+{{template "head" .}}
+<main class="login">
+  <section class="card glass">
+    <img class="mark" src="/static/icon.svg" alt="" width="56" height="56">
+    <h1>Hliðskjálf</h1>
+    <p class="muted">bifrost · Geräte und Kopplungen</p>
+    {{if .Error}}<p class="alert error" role="alert">{{.Error}}</p>{{end}}
+    <form method="post" action="/login" class="stack">
+      <label>Benutzer<input name="user" autocomplete="username" autocapitalize="none" required autofocus></label>
+      <label>Passwort<input name="password" type="password" autocomplete="current-password" required></label>
+      <button class="btn emerald" type="submit">Anmelden</button>
+    </form>
+  </section>
+</main>
+{{template "foot" .}}

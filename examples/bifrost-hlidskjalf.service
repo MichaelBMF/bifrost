@@ -1,0 +1,29 @@
+[Unit]
+Description=Bifrost web UI (Hlidskjalf) for devices and pairing
+After=network-online.target bifrost-asgard.service
+Wants=bifrost-asgard.service
+
+[Service]
+# The config (with password hashes) stays root-only (0600); systemd hands the
+# service a private copy.
+LoadCredential=hlidskjalf.json:/etc/bifrost/hlidskjalf.json
+ExecStart=/usr/local/bin/bifrost hlidskjalf -config %d/hlidskjalf.json
+DynamicUser=yes
+StateDirectory=bifrost-hlidskjalf
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
