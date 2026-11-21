@@ -32,16 +32,22 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       sha: ${{ steps.sha.outputs.sha }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
       - name: Validate version
+        id: version
         env:
-          VERSION: ${{ inputs.version }}
+          INPUT: ${{ inputs.version }}
         run: |
-          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::version must look like v1.2.3"; exit 1; }
+          # Accept "0.2.0", " v0.2.0 " etc.; the tag is always "v0.2.0".
+          VERSION=$(echo "$INPUT" | tr -d '[:space:]')
+          VERSION="v${VERSION#v}"
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::version must look like v1.2.3 (got '$INPUT')"; exit 1; }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
             echo "::error::tag $VERSION already exists"; exit 1
           fi
@@ -107,7 +113,7 @@ jobs:
           echo "$CHECKSUM  build/ios/Bifrost.xcframework.zip" | sha256sum -c -
       - name: Pin framework in Package.swift, commit and tag
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ needs.check.outputs.version }}
           CHECKSUM: ${{ needs.ios.outputs.checksum }}
         run: |
           scripts/update-package-swift.sh "$VERSION" "$CHECKSUM"
@@ -133,7 +139,7 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GORELEASER_CURRENT_TAG: ${{ inputs.version }}
+          GORELEASER_CURRENT_TAG: ${{ needs.check.outputs.version }}
           XCFRAMEWORK_ZIP: build/ios/Bifrost.xcframework.zip   # relative; build/ is git-ignored
           MINISIGN_KEY_FILE: ${{ runner.temp }}/minisign.key
           MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
