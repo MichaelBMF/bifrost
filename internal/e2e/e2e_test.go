@@ -90,16 +90,34 @@ func setup(t *testing.T) *env {
 }
 
 func (e *env) pairCode(t *testing.T, name string, svcs ...string) string {
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(20 * time.Second)
 	for {
 		code, err := e.agent.StartPairing(name, svcs)
 		if err == nil {
+			e.waitPairingOpen(t, code)
 			return code
 		}
 		if time.Now().After(deadline) {
 			t.Fatal(err)
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// waitPairingOpen waits until pair_open has reached the relay over the control channel.
+func (e *env) waitPairingOpen(t *testing.T, code string) {
+	t.Helper()
+	p, err := agent.ParsePairingCode(code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, _ := hex.DecodeString(p.Token)
+	deadline := time.Now().Add(20 * time.Second)
+	for !e.relay.PairingOpen(p.AgentID, wire.TokenHash(token)) {
+		if time.Now().After(deadline) {
+			t.Fatal("pairing window did not open at the relay")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
