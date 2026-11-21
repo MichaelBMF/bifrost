@@ -15,7 +15,7 @@
   <section class="card glass pair">
     {{with .Pairing}}
       <h2>Gerät koppeln: <span class="mono">{{.Name}}</span></h2>
-      <p class="muted">Mit Gjallar scannen oder den Code einfügen. Einmal gültig.</p>
+      <p class="muted">Mit Midgard scannen oder den Code einfügen. Einmal gültig.</p>
       <div class="qr" data-expires="{{.Expires.Unix}}">
         <img src="{{.QR}}" alt="QR-Code für die Kopplung von {{.Name}}" width="280" height="280">
         <div class="expired-note">Abgelaufen</div>
