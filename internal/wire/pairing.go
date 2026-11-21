@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"unicode"
 )
@@ -30,10 +31,10 @@ func ParsePairingCode(s string) (PairingCode, error) {
 	}
 	b, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(s, "bifrost1:"))
 	if err != nil {
-		return p, err
+		return p, fmt.Errorf("invalid pairing code: %w", err)
 	}
 	if err := json.Unmarshal(b, &p); err != nil {
-		return p, err
+		return p, fmt.Errorf("invalid pairing code: %w", err)
 	}
 	if p.Relay == "" || p.RelayPin == "" || p.AgentID == "" || p.AgentPub == "" || p.Token == "" {
 		return p, errors.New("incomplete pairing code")
