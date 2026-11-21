@@ -9,6 +9,7 @@
 //	bifrost devices  -admin 127.0.0.1:7070
 //	bifrost client pair    -state phone -code bifrost1:... [-user alice] [-device-name "Alice's iPhone"]
 //	bifrost client forward -state phone -L mqtt=127.0.0.1:11883 [-L ha=127.0.0.1:18123]
+//	bifrost version
 package main
 
 import (
@@ -29,6 +30,9 @@ import (
 	"github.com/mdp/qrterminal/v3"
 )
 
+// version is set at build time (-ldflags "-X main.version=...").
+var version = "dev"
+
 type multi []string
 
 func (m *multi) String() string     { return strings.Join(*m, ",") }
@@ -41,6 +45,8 @@ func main() {
 	cmd, args := os.Args[1], os.Args[2:]
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 	switch cmd {
+	case "version", "-version", "--version":
+		fmt.Println(version)
 	case "heimdall":
 		cfgPath := fs.String("config", "heimdall.json", "config file")
 		fs.Parse(args)
@@ -152,6 +158,6 @@ func check(err error) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `bifrost heimdall|asgard|hlidskjalf|pair|revoke|devices|client pair|client forward  (details: README.md)`)
+	fmt.Fprintln(os.Stderr, `bifrost heimdall|asgard|hlidskjalf|pair|revoke|devices|client pair|client forward|version  (details: README.md)`)
 	os.Exit(2)
 }

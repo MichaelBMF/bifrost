@@ -1,0 +1,33 @@
+#!/bin/sh
+# End-to-end check: home lab -> VPS relay -> WireGuard tunnel -> agent -> Mosquitto.
+# Reports success or failure to a push monitor (PING_URL).
+#
+# Environment (from /etc/bifrost-monitor.env, mode 0600):
+#   MQTT_PASS    password of the MQTT user (default user: monitor)
+#   PING_URL     push monitor URL; "/fail" is appended on failure
+#   MQTT_USER    optional, default "monitor"
+#   MQTT_TOPIC   optional, default "bifrost/monitor"
+#   STATE        optional, client state of the paired monitor device,
+#                default /var/lib/bifrost-monitor/mon
+#   PORT         optional, local forward port, default 11884
+set -u
+: "${MQTT_PASS:?MQTT_PASS is not set}"
+: "${PING_URL:?PING_URL is not set}"
+STATE="${STATE:-/var/lib/bifrost-monitor/mon}"
+PORT="${PORT:-11884}"
+MQTT_USER="${MQTT_USER:-monitor}"
+MQTT_TOPIC="${MQTT_TOPIC:-bifrost/monitor}"
+
+/usr/bin/bifrost client forward -state "$STATE" -L "mqtt=127.0.0.1:$PORT" >/dev/null 2>&1 &
+FWD=$!
+trap 'kill $FWD 2>/dev/null' EXIT
+sleep 2
+if timeout 15 mosquitto_pub -h 127.0.0.1 -p "$PORT" -u "$MQTT_USER" -P "$MQTT_PASS" \
+	-t "$MQTT_TOPIC" -m "$(date -Is)" -q 1; then
+	curl -fsS -m 10 --retry 3 "$PING_URL" >/dev/null
+	echo OK
+else
+	curl -fsS -m 10 --retry 3 "$PING_URL/fail" >/dev/null
+	echo FAIL
+	exit 1
+fi

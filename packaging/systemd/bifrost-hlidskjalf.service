@@ -1,5 +1,6 @@
 [Unit]
 Description=Bifrost web UI (Hlidskjalf) for devices and pairing
+Documentation=https://github.com/MichaelBMF/bifrost
 After=network-online.target bifrost-asgard.service
 Wants=bifrost-asgard.service
 
@@ -7,7 +8,7 @@ Wants=bifrost-asgard.service
 # The config (with password hashes) stays root-only (0600); systemd hands the
 # service a private copy.
 LoadCredential=hlidskjalf.json:/etc/bifrost/hlidskjalf.json
-ExecStart=/usr/local/bin/bifrost hlidskjalf -config %d/hlidskjalf.json
+ExecStart=/usr/bin/bifrost hlidskjalf -config %d/hlidskjalf.json
 DynamicUser=yes
 StateDirectory=bifrost-hlidskjalf
 NoNewPrivileges=yes

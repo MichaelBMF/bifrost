@@ -1,0 +1,38 @@
+#!/bin/sh
+# Runs after the package is unpacked: on first install and on every upgrade.
+set -e
+
+UNITS="bifrost-heimdall.service bifrost-asgard.service bifrost-hlidskjalf.service"
+
+if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-remove" ]; then
+	if command -v systemd-sysusers >/dev/null 2>&1; then
+		systemd-sysusers bifrost.conf || true
+	fi
+	if command -v systemd-tmpfiles >/dev/null 2>&1; then
+		systemd-tmpfiles --create bifrost.conf || true
+	fi
+	if [ -d /run/systemd/system ]; then
+		systemctl daemon-reload || true
+		# Nothing is enabled automatically: each host runs a different role and
+		# needs its config first. On an upgrade, restart whatever is running.
+		if [ -n "${2:-}" ]; then
+			# shellcheck disable=SC2086
+			systemctl try-restart $UNITS || true
+		fi
+	fi
+fi
+
+# Hand-written units or an old binary from a manual install would shadow the
+# packaged ones. Warn instead of touching them.
+for f in /etc/systemd/system/bifrost-heimdall.service \
+	/etc/systemd/system/bifrost-asgard.service \
+	/etc/systemd/system/bifrost-hlidskjalf.service \
+	/etc/systemd/system/bifrost-check.service \
+	/etc/systemd/system/bifrost-check.timer \
+	/usr/local/bin/bifrost /usr/local/bin/bifrost-check; do
+	if [ -e "$f" ]; then
+		echo "bifrost: $f overrides the packaged file; remove it (see docs/install.md)" >&2
+	fi
+done
+
+exit 0

@@ -1,0 +1,11 @@
+[Unit]
+Description=Bifrost end-to-end check
+Documentation=https://github.com/MichaelBMF/bifrost
+After=network-online.target bifrost-asgard.service
+ConditionPathExists=/etc/bifrost-monitor.env
+
+[Service]
+Type=oneshot
+User=bifrost-mon
+EnvironmentFile=/etc/bifrost-monitor.env
+ExecStart=/usr/bin/bifrost-check

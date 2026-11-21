@@ -1,0 +1,144 @@
+# Cuts a release: builds the iOS framework, pins it in Package.swift, commits
+# and tags that on main, then builds binaries and .deb packages with GoReleaser
+# and publishes everything with a signed SHA256SUMS.
+#
+# Start it from the Actions tab ("Release" -> "Run workflow") with a version
+# such as v0.2.0. Do not push release tags by hand: Package.swift at the tag
+# must already contain the checksum of that tag's framework.
+#
+# Needs two repository secrets (Settings -> Secrets and variables -> Actions):
+#   MINISIGN_SECRET_KEY   contents of the minisign secret key file
+#   MINISIGN_PASSWORD     its password
+# and the public key committed as packaging/minisign.pub. See docs/release.md.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag, e.g. v0.2.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Validate version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::version must look like v1.2.3"; exit 1; }
+          if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
+            echo "::error::tag $VERSION already exists"; exit 1
+          fi
+          [ -f packaging/minisign.pub ] || { echo "::error::packaging/minisign.pub is missing (docs/release.md)"; exit 1; }
+      - name: Remember commit
+        id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  ios:
+    needs: check
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build Bifrost.xcframework
+        run: scripts/build-ios.sh build/ios
+      - name: Zip and checksum
+        id: zip
+        run: |
+          cd build/ios
+          ditto -c -k --sequesterRsrc --keepParent Bifrost.xcframework Bifrost.xcframework.zip
+          sum=$(shasum -a 256 Bifrost.xcframework.zip | cut -d' ' -f1)
+          echo "checksum=$sum" >> "$GITHUB_OUTPUT"
+          echo "Bifrost.xcframework.zip: $sum"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xcframework
+          path: build/ios/Bifrost.xcframework.zip
+          if-no-files-found: error
+    outputs:
+      checksum: ${{ steps.zip.outputs.checksum }}
+
+  release:
+    needs: [check, ios]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@v4
+        with:
+          name: xcframework
+          path: build/ios
+      - name: Verify framework checksum
+        env:
+          CHECKSUM: ${{ needs.ios.outputs.checksum }}
+        run: |
+          echo "$CHECKSUM  build/ios/Bifrost.xcframework.zip" | sha256sum -c -
+      - name: Pin framework in Package.swift, commit and tag
+        env:
+          VERSION: ${{ inputs.version }}
+          CHECKSUM: ${{ needs.ios.outputs.checksum }}
+        run: |
+          scripts/update-package-swift.sh "$VERSION" "$CHECKSUM"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Package.swift
+          git commit -m "Release $VERSION"
+          git tag -a "$VERSION" -m "bifrost $VERSION"
+          # Fails (and releases nothing) if main moved since the check job.
+          git push --atomic origin HEAD:refs/heads/main "refs/tags/$VERSION"
+      - name: Install minisign
+        run: sudo apt-get update && sudo apt-get install -y minisign
+      - name: Write signing key
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          [ -n "$MINISIGN_SECRET_KEY" ] || { echo "::error::secret MINISIGN_SECRET_KEY is not set"; exit 1; }
+          umask 077
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/minisign.key"
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GORELEASER_CURRENT_TAG: ${{ inputs.version }}
+          XCFRAMEWORK_ZIP: build/ios/Bifrost.xcframework.zip   # relative; build/ is git-ignored
+          MINISIGN_KEY_FILE: ${{ runner.temp }}/minisign.key
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+      - name: Verify signature
+        run: minisign -Vm dist/SHA256SUMS -p packaging/minisign.pub
+      - name: Remove signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/minisign.key"

@@ -1,0 +1,122 @@
+# Release build for bifrost. Run by .github/workflows/release.yml; do not tag by hand.
+# XCFRAMEWORK_ZIP must be relative to the repository root.
+# Local dry run (no signing, no upload):
+#   XCFRAMEWORK_ZIP=build/ios/Bifrost.xcframework.zip goreleaser release --snapshot --clean --skip=sign
+version: 2
+project_name: bifrost
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: bifrost
+    main: ./cmd/bifrost
+    binary: bifrost
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: bifrost
+    ids: [bifrost]
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files: [LICENSE, README.md]
+
+nfpms:
+  - id: bifrost
+    ids: [bifrost]
+    package_name: bifrost
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Arch }}"
+    formats: [deb]
+    vendor: MichaelBMF
+    homepage: https://github.com/MichaelBMF/bifrost
+    maintainer: MichaelBMF <8409922+MichaelBMF@users.noreply.github.com>
+    description: |-
+      Home lab relay: relay (heimdall), agent (asgard) and web UI (hlidskjalf).
+      Units are installed but not enabled; enable the role a host runs.
+    license: MIT
+    section: net
+    priority: optional
+    bindir: /usr/bin
+    suggests: [mosquitto-clients, curl]
+    contents:
+      - src: packaging/systemd/bifrost-heimdall.service
+        dst: /usr/lib/systemd/system/bifrost-heimdall.service
+      - src: packaging/systemd/bifrost-asgard.service
+        dst: /usr/lib/systemd/system/bifrost-asgard.service
+      - src: packaging/systemd/bifrost-hlidskjalf.service
+        dst: /usr/lib/systemd/system/bifrost-hlidskjalf.service
+      - src: packaging/systemd/bifrost-check.service
+        dst: /usr/lib/systemd/system/bifrost-check.service
+      - src: packaging/systemd/bifrost-check.timer
+        dst: /usr/lib/systemd/system/bifrost-check.timer
+      - src: packaging/scripts/bifrost-check
+        dst: /usr/bin/bifrost-check
+        file_info:
+          mode: 0755
+      - src: packaging/deb/sysusers.conf
+        dst: /usr/lib/sysusers.d/bifrost.conf
+      - src: packaging/deb/tmpfiles.conf
+        dst: /usr/lib/tmpfiles.d/bifrost.conf
+      - src: examples/heimdall.json
+        dst: /usr/share/doc/bifrost/examples/heimdall.json
+      - src: examples/asgard.json
+        dst: /usr/share/doc/bifrost/examples/asgard.json
+      - src: examples/hlidskjalf.json
+        dst: /usr/share/doc/bifrost/examples/hlidskjalf.json
+      - src: LICENSE
+        dst: /usr/share/doc/bifrost/copyright
+      # /etc/bifrost is created empty; configs and keys never come from the package.
+      - dst: /etc/bifrost
+        type: dir
+        file_info:
+          mode: 0755
+    scripts:
+      postinstall: packaging/deb/postinst
+      preremove: packaging/deb/prerm
+      postremove: packaging/deb/postrm
+
+checksum:
+  name_template: SHA256SUMS
+  algorithm: sha256
+  extra_files:
+    - glob: "{{ .Env.XCFRAMEWORK_ZIP }}"
+
+signs:
+  - id: minisign
+    artifacts: checksum
+    cmd: minisign
+    stdin: "{{ .Env.MINISIGN_PASSWORD }}"
+    args:
+      - -S
+      - -s
+      - "{{ .Env.MINISIGN_KEY_FILE }}"
+      - -t
+      - "bifrost {{ .Tag }}"
+      - -m
+      - "${artifact}"
+      - -x
+      - "${signature}"
+    signature: "${artifact}.minisig"
+
+release:
+  github:
+    owner: MichaelBMF
+    name: bifrost
+  extra_files:
+    - glob: "{{ .Env.XCFRAMEWORK_ZIP }}"
+    - glob: packaging/minisign.pub
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^Release v"
