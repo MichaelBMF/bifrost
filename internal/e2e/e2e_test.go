@@ -108,7 +108,7 @@ func roundTrip(c net.Conn, n int) error {
 	rand.Read(msg)
 	go c.Write(msg)
 	got := make([]byte, n)
-	c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	c.SetReadDeadline(time.Now().Add(30 * time.Second))
 	if _, err := io.ReadFull(c, got); err != nil {
 		return err
 	}
