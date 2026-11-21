@@ -15,6 +15,8 @@ to every release.
 | `/usr/lib/systemd/system/bifrost-asgard.service` | agent in the home lab |
 | `/usr/lib/systemd/system/bifrost-hlidskjalf.service` | web UI next to the agent |
 | `/usr/bin/bifrost-check`, `bifrost-check.{service,timer}` | optional end-to-end check |
+| `bifrost-upgrade.{service,timer}` | optional daily self-update (`bifrost upgrade`) |
+| `/usr/share/bifrost/minisign.pub` | release signing key used by `bifrost upgrade` |
 | `/usr/lib/sysusers.d/bifrost.conf`, `/usr/lib/tmpfiles.d/bifrost.conf` | `bifrost-mon` user and its state directory for the check |
 | `/usr/share/doc/bifrost/examples/` | example configs |
 | `/etc/bifrost/` | empty; configs are yours |
@@ -89,6 +91,33 @@ The package prints a warning on install for every such file it finds.
 
 ## Updating
 
-Install the newer `.deb` the same way (`apt install ./bifrost_<new>_<arch>.deb`);
-running services are restarted. To go back, install the previous `.deb`.
-Keep relay and agent on the same version.
+From v0.2.0 on, the package can update itself:
+
+```sh
+sudo bifrost upgrade -check      # is there a newer release?
+sudo bifrost upgrade             # install it
+sudo bifrost upgrade -to v0.2.0  # install a specific version, also an older one
+```
+
+`bifrost upgrade` asks GitHub for the latest release, verifies `SHA256SUMS`
+against `/usr/share/bifrost/minisign.pub` (the signature's trusted comment must
+name exactly that release, so an old signed file cannot be replayed), checks the
+package against it and installs it with `apt-get`. The package restarts the
+bifrost services that were running. If one of them is not active
+20 seconds later, or systemd had to restart it, the previous version is
+installed again and the command fails.
+
+To update automatically once a day (04:00 plus up to one hour of random delay,
+so relay and agent do not restart at the same moment):
+
+```sh
+sudo systemctl enable --now bifrost-upgrade.timer
+journalctl -u bifrost-upgrade        # what happened
+```
+
+Relay and agent may then run different versions for up to an hour. For a
+release that changes the relay/agent protocol, stop the timer on both hosts
+and update them by hand.
+
+Without the timer, install a newer `.deb` by hand as described above; running
+services are restarted.
