@@ -5,7 +5,7 @@
 //	bifrost pair     -admin 127.0.0.1:7070 -name iphone -services mqtt,ha [-user alice]
 //	bifrost revoke   -admin 127.0.0.1:7070 -name iphone
 //	bifrost devices  -admin 127.0.0.1:7070
-//	bifrost client pair    -state phone -code bifrost1:...
+//	bifrost client pair    -state phone -code bifrost1:... [-user alice] [-device-name "Alice's iPhone"]
 //	bifrost client forward -state phone -L mqtt=127.0.0.1:11883 [-L ha=127.0.0.1:18123]
 package main
 
@@ -92,6 +92,8 @@ func main() {
 		sub := args[0]
 		state := fs.String("state", "phone", "base name for keys and state")
 		code := fs.String("code", "", "pairing code (bifrost1:...)")
+		user := fs.String("user", "", "pair: app user name sent to the agent (optional)")
+		devName := fs.String("device-name", "", "pair: device name sent to the agent (optional)")
 		var fwd multi
 		fs.Var(&fwd, "L", "service=address, repeatable")
 		fs.Parse(args[1:])
@@ -99,7 +101,13 @@ func main() {
 		check(err)
 		switch sub {
 		case "pair":
-			check(c.Pair(*code))
+			res, err := c.Pair(*code, client.PairOptions{User: *user, DeviceName: *devName})
+			check(err)
+			fmt.Printf("Paired as %q. Services: %v\n", res.Name, res.Services)
+			if res.User != "" || res.DeviceName != "" {
+				fmt.Printf("User: %q, device name: %q\n", res.User, res.DeviceName)
+			}
+			fmt.Printf("Device fingerprint: %s\nAgent fingerprint: %s\n", res.DeviceFP, res.AgentFP)
 		case "forward":
 			if len(fwd) == 0 {
 				log.Fatal("specify at least one -L service=address")

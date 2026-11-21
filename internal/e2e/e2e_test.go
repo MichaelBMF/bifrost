@@ -122,7 +122,7 @@ func TestEndToEnd(t *testing.T) {
 	e := setup(t)
 	phone, _ := client.Open(filepath.Join(e.dir, "phone"))
 	code := e.pairCode(t, "iphone", "mqtt")
-	if err := phone.Pair(code); err != nil {
+	if _, err := phone.Pair(code, client.PairOptions{}); err != nil {
 		t.Fatalf("pairing: %v", err)
 	}
 	time.Sleep(100 * time.Millisecond)
@@ -144,7 +144,7 @@ func TestEndToEnd(t *testing.T) {
 	})
 	t.Run("token is single use", func(t *testing.T) {
 		other, _ := client.Open(filepath.Join(e.dir, "other"))
-		if err := other.Pair(code); err == nil {
+		if _, err := other.Pair(code, client.PairOptions{}); err == nil {
 			t.Fatal("second pairing with the same code should have failed")
 		}
 	})
