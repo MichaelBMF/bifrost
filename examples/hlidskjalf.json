@@ -1,0 +1,12 @@
+{
+  "listen": "0.0.0.0:8443",
+  "admin": "127.0.0.1:7070",
+  "users": [
+    { "name": "michael", "password_hash": "<output of: bifrost hlidskjalf -hash>" }
+  ],
+  "protected": ["monitor"],
+  "services": ["mqtt"],
+  "tls": { "mode": "self-signed" },
+  "state_dir": "/var/lib/bifrost-hlidskjalf",
+  "session_hours": 12
+}

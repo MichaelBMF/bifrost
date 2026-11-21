@@ -1,0 +1,93 @@
+{{template "head" .}}
+<header class="top">
+  <div class="brand"><img src="/static/icon.svg" alt="" width="36" height="36"><div><h1>Hliðskjálf</h1><p class="muted">bifrost · asgard</p></div></div>
+  <form method="post" action="/logout" class="who">
+    <span class="muted">{{.User}}</span>
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <button class="btn ghost small" type="submit">Abmelden</button>
+  </form>
+</header>
+
+<main class="grid">
+  {{if .Error}}<p class="alert error wide" role="alert">{{.Error}}</p>{{end}}
+  {{if .Notice}}<p class="alert ok wide" role="status">{{.Notice}}</p>{{end}}
+
+  <section class="card glass pair">
+    {{with .Pairing}}
+      <h2>Gerät koppeln: <span class="mono">{{.Name}}</span></h2>
+      <p class="muted">Mit Gjallar scannen oder den Code einfügen. Einmal gültig.</p>
+      <div class="qr" data-expires="{{.Expires.Unix}}">
+        <img src="{{.QR}}" alt="QR-Code für die Kopplung von {{.Name}}" width="280" height="280">
+        <div class="expired-note">Abgelaufen</div>
+      </div>
+      <p class="countdown"><span class="dot"></span><span data-countdown>noch 5:00 min</span></p>
+      <div class="code-row">
+        <input class="mono code" readonly value="{{.Code}}" aria-label="Pairing-Code" id="code">
+        <button class="btn ghost small" type="button" data-copy="code">Kopieren</button>
+      </div>
+      <p class="muted small">Services: {{join .Services ", "}}{{if .User}} · gebunden an Benutzer <b>{{.User}}</b>{{end}}</p>
+      <a class="btn ghost" href="/">Fertig</a>
+    {{else}}
+      <h2>Neues Gerät koppeln</h2>
+      <form method="post" action="/pair" class="stack">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <label>Gerätename
+          <input name="name" value="{{$.Form.Name}}" placeholder="michael-iphone" pattern="[a-z0-9][a-z0-9._\-]{0,47}" autocapitalize="none" required>
+          <small class="muted">a–z, 0–9, Punkt, Binde- und Unterstrich</small>
+        </label>
+        <label>Benutzer (optional)
+          <input name="user" value="{{$.Form.User}}" placeholder="michael" autocapitalize="none" maxlength="64">
+          <small class="muted">Die App muss sich mit genau diesem Benutzernamen koppeln (bifrost mit Benutzer-Bindung).</small>
+        </label>
+        <fieldset>
+          <legend>Services</legend>
+          <div class="chips">
+          {{range $.Services}}
+            <label class="chip"><input type="checkbox" name="services" value="{{.}}" {{if hasService $.Form.Services .}}checked{{end}}><span>{{.}}</span></label>
+          {{end}}
+          </div>
+        </fieldset>
+        <button class="btn emerald" type="submit">QR-Code erzeugen</button>
+        <p class="muted small">Der Code gilt 5 Minuten und nur einmal.</p>
+      </form>
+    {{end}}
+  </section>
+
+  <section class="devices">
+    <h2>Geräte <span class="count">{{len .Devices}}</span></h2>
+    {{range .Devices}}
+    <article class="card device{{if .Protected}} protected{{end}}">
+      <div class="device-head">
+        <h3 class="mono">{{.Name}}</h3>
+        {{if .Protected}}<span class="badge lock" title="In der Konfiguration geschützt">geschützt</span>{{end}}
+      </div>
+      <dl>
+        {{if .User}}<dt>Benutzer</dt><dd>{{.User}}{{if .UserBound}} <span class="badge">gebunden</span>{{end}}</dd>{{end}}
+        {{if .DeviceName}}<dt>Gerät</dt><dd>{{.DeviceName}}</dd>{{end}}
+        <dt>Services</dt><dd>{{range .Services}}<span class="badge svc">{{.}}</span>{{end}}</dd>
+        <dt>Fingerprint</dt><dd class="mono">{{.Fingerprint}}</dd>
+        <dt>Gekoppelt</dt><dd>{{.AddedTime}}</dd>
+      </dl>
+      {{if .Protected}}
+        <p class="muted small">Widerrufen nur nach Entfernen aus <span class="mono">protected</span> in der Konfiguration.</p>
+      {{else}}
+      <details class="revoke">
+        <summary>Widerrufen…</summary>
+        <form method="post" action="/revoke" class="stack">
+          <input type="hidden" name="csrf" value="{{$.CSRF}}">
+          <input type="hidden" name="name" value="{{.Name}}">
+          <label>Zum Bestätigen <span class="mono">{{.Name}}</span> eintippen
+            <input name="confirm" autocomplete="off" autocapitalize="none" required>
+          </label>
+          <button class="btn crimson" type="submit">Endgültig widerrufen</button>
+          <p class="muted small">Trennt bestehende Verbindungen sofort. Das Gerät muss danach neu gekoppelt werden.</p>
+        </form>
+      </details>
+      {{end}}
+    </article>
+    {{else}}
+    {{if not $.Error}}<p class="muted">Noch keine Geräte gekoppelt.</p>{{end}}
+    {{end}}
+  </section>
+</main>
+{{template "foot" .}}

@@ -17,6 +17,7 @@ Prototype for the "Home Lab Relay: Architecture" design, variant **v2**:
 | --- | --- |
 | `internal/relay` | TLS for devices, key allowlist, per-IP rate limit, one WireGuard peer per agent, control channel, one TCP connection through the tunnel per device connection |
 | `internal/agent` | In-process WireGuard with keepalive, control channel with backoff, Noise responder, per-device services, pairing, revocation, admin API |
+| `internal/web` | Hlidskjalf: web UI for devices and pairing (login, QR codes, revoke) |
 | `internal/wg` | In-process WireGuard tunnel (wireguard-go, netstack) |
 | `internal/client` | The app's tunnel core: pairing and local port forwarding |
 | `mobile` | gomobile binding of the tunnel core for iOS (`Bifrost.xcframework`) |
@@ -153,6 +154,34 @@ Notes for the app:
 - `Unpair()` deletes the pairing state and replaces the keys, but does not notify the agent;
   revoke the device there with `bifrost revoke -name …`.
 - `Pair` fails if the client is already paired; call `Unpair()` first.
+
+## Web UI (Hlidskjalf)
+
+`bifrost hlidskjalf` is a small web UI that runs next to the agent: list devices,
+pair a new one (QR code to scan with the app, valid 5 minutes, single use) and revoke
+devices. It talks to the agent's admin API on localhost and only exposes its own pages,
+never the admin API.
+
+- **Login:** users with bcrypt password hashes in the config (`bifrost hlidskjalf -hash`).
+  Sessions are HttpOnly, SameSite=Strict cookies; every form carries a CSRF token; failed
+  logins are rate limited per IP.
+- **TLS:** by default a self-signed certificate is created in `state_dir`; its SHA-256
+  fingerprint is logged so the browser warning can be checked once. `tls.mode` can also be
+  `files` (own certificate) or `off` (only behind a TLS reverse proxy).
+- **Protected devices:** devices listed in `protected` are marked and cannot be revoked from
+  the UI. Revoking any other device requires typing its name.
+- **User binding:** the optional user field is passed to the agent as `user`; agents with
+  user support then reject a pairing from a different username.
+
+Setup next to asgard (see `examples/hlidskjalf.json` and `examples/bifrost-hlidskjalf.service`):
+
+```sh
+bifrost hlidskjalf -hash                      # prints a bcrypt hash; put it into the config
+install -m 600 hlidskjalf.json /etc/bifrost/hlidskjalf.json
+install -m 644 bifrost-hlidskjalf.service /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now bifrost-hlidskjalf
+journalctl -u bifrost-hlidskjalf | grep fingerprint
+```
 
 ## How it works
 
