@@ -1,0 +1,30 @@
+[Unit]
+Description=Bifrost agent (asgard)
+Documentation=https://github.com/MichaelBMF/bifrost
+Wants=network-online.target
+After=network-online.target mosquitto.service
+
+[Service]
+ExecStart=/usr/bin/bifrost asgard -config /etc/bifrost/asgard.json
+DynamicUser=yes
+StateDirectory=bifrost
+StateDirectoryMode=0700
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+# AF_NETLINK is required: the in-process WireGuard opens a netlink socket.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

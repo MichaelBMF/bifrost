@@ -27,6 +27,13 @@ Prototype for the "Home Lab Relay: Architecture" design, variant **v2**:
 
 Not yet included: push (APNs/FCM/ntfy), metrics, P-256 keys in the Secure Enclave.
 
+## Install
+
+Releases contain `.deb` packages with hardened systemd units, binaries for
+linux/darwin and a signed `SHA256SUMS`. See [docs/install.md](docs/install.md);
+how releases are made is in [docs/release.md](docs/release.md).
+`bifrost version` prints the installed version.
+
 ## Build and test
 
 ```sh
@@ -95,7 +102,11 @@ Package `mobile` wraps the tunnel core for [gomobile](https://pkg.go.dev/golang.
 It does not depend on wireguard-go or gVisor (checked by a test and by the build script),
 so the framework stays small.
 
-Build the framework (needs Xcode and Go; installs gomobile/gobind in the version pinned in `go.mod`):
+Apps can use it through Swift Package Manager: add `https://github.com/MichaelBMF/bifrost`
+as a package dependency and link the `Bifrost` library. Each release attaches the prebuilt
+`Bifrost.xcframework.zip`, and `Package.swift` pins its checksum (see [docs/release.md](docs/release.md)).
+
+To build the framework yourself (needs Xcode and Go; installs gomobile/gobind in the version pinned in `go.mod`):
 
 ```sh
 scripts/build-ios.sh <output-dir>       # -> <output-dir>/Bifrost.xcframework (ios + iossimulator)
@@ -173,13 +184,13 @@ never the admin API.
 - **User binding:** the optional user field is passed to the agent as `user`; agents with
   user support then reject a pairing from a different username.
 
-Setup next to asgard (see `examples/hlidskjalf.json` and `examples/bifrost-hlidskjalf.service`):
+Setup next to asgard (see `examples/hlidskjalf.json`; the unit
+`packaging/systemd/bifrost-hlidskjalf.service` comes with the package):
 
 ```sh
 bifrost hlidskjalf -hash                      # prints a bcrypt hash; put it into the config
 install -m 600 hlidskjalf.json /etc/bifrost/hlidskjalf.json
-install -m 644 bifrost-hlidskjalf.service /etc/systemd/system/
-systemctl daemon-reload && systemctl enable --now bifrost-hlidskjalf
+systemctl enable --now bifrost-hlidskjalf
 journalctl -u bifrost-hlidskjalf | grep fingerprint
 ```
 

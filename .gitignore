@@ -6,3 +6,6 @@
 
 # iOS build output
 /build/
+
+# Release build output
+/dist/
