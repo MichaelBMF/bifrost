@@ -3,3 +3,6 @@
 
 # Local state and keys
 *.state
+
+# iOS build output
+/build/
