@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -59,31 +58,11 @@ type pending struct {
 	expires  time.Time
 }
 
-// PairingCode is the content of the QR code.
-type PairingCode struct {
-	Relay    string `json:"r"`
-	RelayPin string `json:"p"`
-	AgentID  string `json:"a"`
-	AgentPub string `json:"k"`
-	Token    string `json:"t"`
-}
+// PairingCode is the content of the QR code (kept here for compatibility).
+type PairingCode = wire.PairingCode
 
-func (p PairingCode) String() string {
-	b, _ := json.Marshal(p)
-	return "bifrost1:" + base64.RawURLEncoding.EncodeToString(b)
-}
-
-func ParsePairingCode(s string) (PairingCode, error) {
-	var p PairingCode
-	if !strings.HasPrefix(s, "bifrost1:") {
-		return p, errors.New("not a bifrost1 code")
-	}
-	b, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(s, "bifrost1:"))
-	if err != nil {
-		return p, err
-	}
-	return p, json.Unmarshal(b, &p)
-}
+// ParsePairingCode parses a "bifrost1:" code (kept here for compatibility).
+func ParsePairingCode(s string) (PairingCode, error) { return wire.ParsePairingCode(s) }
 
 type Agent struct {
 	cfg     *Config

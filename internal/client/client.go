@@ -12,7 +12,6 @@ import (
 	"net"
 	"os"
 
-	"github.com/MichaelBMF/bifrost/internal/agent"
 	"github.com/MichaelBMF/bifrost/internal/keys"
 	"github.com/MichaelBMF/bifrost/internal/wire"
 )
@@ -69,7 +68,7 @@ func (c *Client) dialRelay(relay, pin string, h wire.Hello) (net.Conn, error) {
 }
 
 func (c *Client) Pair(code string) error {
-	p, err := agent.ParsePairingCode(code)
+	p, err := wire.ParsePairingCode(code)
 	if err != nil {
 		return err
 	}
