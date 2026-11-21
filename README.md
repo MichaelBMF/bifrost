@@ -32,7 +32,8 @@ Not yet included: push (APNs/FCM/ntfy), metrics, P-256 keys in the Secure Enclav
 Releases contain `.deb` packages with hardened systemd units, binaries for
 linux/darwin and a signed `SHA256SUMS`. See [docs/install.md](docs/install.md);
 how releases are made is in [docs/release.md](docs/release.md).
-`bifrost version` prints the installed version.
+`bifrost version` prints the installed version; `sudo bifrost upgrade` installs the
+latest signed release (optionally daily via `bifrost-upgrade.timer`).
 
 ## Build and test
 

@@ -5,6 +5,7 @@ go 1.23.1
 toolchain go1.24.7
 
 require (
+	aead.dev/minisign v0.3.0
 	github.com/flynn/noise v1.1.0
 	github.com/mdp/qrterminal/v3 v3.2.0
 	golang.org/x/crypto v0.40.0

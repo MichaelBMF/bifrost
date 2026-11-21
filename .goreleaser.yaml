@@ -57,6 +57,12 @@ nfpms:
         dst: /usr/lib/systemd/system/bifrost-check.service
       - src: packaging/systemd/bifrost-check.timer
         dst: /usr/lib/systemd/system/bifrost-check.timer
+      - src: packaging/systemd/bifrost-upgrade.service
+        dst: /usr/lib/systemd/system/bifrost-upgrade.service
+      - src: packaging/systemd/bifrost-upgrade.timer
+        dst: /usr/lib/systemd/system/bifrost-upgrade.timer
+      - src: packaging/minisign.pub
+        dst: /usr/share/bifrost/minisign.pub
       - src: packaging/scripts/bifrost-check
         dst: /usr/bin/bifrost-check
         file_info:

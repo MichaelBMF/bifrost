@@ -1,0 +1,13 @@
+[Unit]
+Description=Bifrost self-update from signed GitHub releases
+Documentation=https://github.com/MichaelBMF/bifrost/blob/main/docs/install.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Runs as root: it installs the package. The release is checked against
+# /usr/share/bifrost/minisign.pub before anything is installed.
+ExecStart=/usr/bin/bifrost upgrade
+PrivateTmp=yes
+TimeoutStartSec=20min

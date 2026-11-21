@@ -10,6 +10,7 @@
 //	bifrost client pair    -state phone -code bifrost1:... [-user alice] [-device-name "Alice's iPhone"]
 //	bifrost client forward -state phone -L mqtt=127.0.0.1:11883 [-L ha=127.0.0.1:18123]
 //	bifrost version
+//	bifrost upgrade [-check] [-to v0.2.0]       (install the latest signed release)
 package main
 
 import (
@@ -47,6 +48,8 @@ func main() {
 	switch cmd {
 	case "version", "-version", "--version":
 		fmt.Println(version)
+	case "upgrade":
+		check(upgrade(args))
 	case "heimdall":
 		cfgPath := fs.String("config", "heimdall.json", "config file")
 		fs.Parse(args)
@@ -158,6 +161,6 @@ func check(err error) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `bifrost heimdall|asgard|hlidskjalf|pair|revoke|devices|client pair|client forward|version  (details: README.md)`)
+	fmt.Fprintln(os.Stderr, `bifrost heimdall|asgard|hlidskjalf|pair|revoke|devices|client pair|client forward|version|upgrade  (details: README.md)`)
 	os.Exit(2)
 }
