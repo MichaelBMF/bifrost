@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"unicode"
 )
 
 // PairingCode is the content of the QR code ("bifrost1:" + base64url(JSON)).
@@ -38,4 +39,42 @@ func ParsePairingCode(s string) (PairingCode, error) {
 		return p, errors.New("incomplete pairing code")
 	}
 	return p, nil
+}
+
+// PairRequest is the app's first encrypted message during pairing (Noise_IKpsk2).
+// User and DeviceName are optional and self-asserted by the app; older clients
+// send only relay_id.
+type PairRequest struct {
+	RelayID    string `json:"relay_id"`
+	User       string `json:"user,omitempty"`
+	DeviceName string `json:"device_name,omitempty"`
+}
+
+// PairResponse is the agent's answer to a PairRequest.
+type PairResponse struct {
+	OK         bool     `json:"ok"`
+	Error      string   `json:"error,omitempty"`
+	Name       string   `json:"name,omitempty"` // agent-assigned device name (primary key)
+	Services   []string `json:"services,omitempty"`
+	DeviceFP   string   `json:"device_fp,omitempty"`
+	AgentFP    string   `json:"agent_fp,omitempty"`
+	User       string   `json:"user,omitempty"`
+	DeviceName string   `json:"device_name,omitempty"`
+}
+
+// MaxLabelLen limits user and device names exchanged during pairing.
+const MaxLabelLen = 64
+
+// CleanLabel trims a user or device name, drops control characters and limits its length.
+func CleanLabel(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, strings.TrimSpace(s))
+	if r := []rune(s); len(r) > MaxLabelLen {
+		s = string(r[:MaxLabelLen])
+	}
+	return strings.TrimSpace(s)
 }

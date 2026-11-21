@@ -2,7 +2,7 @@
 //
 //	bifrost heimdall -config heimdall.json   (relay on the VPS)
 //	bifrost asgard   -config asgard.json     (agent in the home lab)
-//	bifrost pair     -admin 127.0.0.1:7070 -name iphone -services mqtt,ha
+//	bifrost pair     -admin 127.0.0.1:7070 -name iphone -services mqtt,ha [-user alice]
 //	bifrost revoke   -admin 127.0.0.1:7070 -name iphone
 //	bifrost devices  -admin 127.0.0.1:7070
 //	bifrost client pair    -state phone -code bifrost1:...
@@ -56,9 +56,14 @@ func main() {
 		admin := fs.String("admin", "127.0.0.1:7070", "agent admin address")
 		name := fs.String("name", "", "device name")
 		svcs := fs.String("services", "", "allowed services, comma-separated")
+		user := fs.String("user", "", "pair: bind the pairing to this app user name (optional)")
 		fs.Parse(args)
 		base := "http://" + *admin
-		q := url.Values{"name": {*name}, "services": {*svcs}}.Encode()
+		v := url.Values{"name": {*name}, "services": {*svcs}}
+		if *user != "" {
+			v.Set("user", *user)
+		}
+		q := v.Encode()
 		var resp *http.Response
 		var err error
 		if cmd == "devices" {
