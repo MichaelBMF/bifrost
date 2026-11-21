@@ -265,6 +265,8 @@ func (r *Relay) serveAgent(c net.Conn) {
 			a.pairs[m.Hash] = time.Now().Add(time.Duration(m.TTL) * time.Second)
 		case "pair_close":
 			delete(a.pairs, m.Hash)
+		case "ping":
+			// Keepalive from the agent; nothing to do.
 		}
 		r.mu.Unlock()
 	}

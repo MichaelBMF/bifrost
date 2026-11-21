@@ -73,7 +73,7 @@ type StreamHeader struct {
 
 // Control messages travel on the agent <-> relay control channel.
 type Control struct {
-	Op   string   `json:"op"` // sync_devices | pair_open | pair_close
+	Op   string   `json:"op"` // sync_devices | pair_open | pair_close | ping
 	Keys []string `json:"keys,omitempty"`
 	Hash string   `json:"hash,omitempty"`
 	TTL  int      `json:"ttl,omitempty"`
