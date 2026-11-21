@@ -11,6 +11,8 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
+# If you add RestrictAddressFamilies=, include AF_NETLINK: the in-process
+# WireGuard opens a netlink socket on Linux and fails to start without it.
 Restart=always
 
 [Install]

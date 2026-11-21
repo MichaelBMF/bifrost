@@ -24,7 +24,6 @@ import (
 	"github.com/MichaelBMF/bifrost/internal/keys"
 	"github.com/MichaelBMF/bifrost/internal/wg"
 	"github.com/MichaelBMF/bifrost/internal/wire"
-	"github.com/mdp/qrterminal/v3"
 )
 
 type Config struct {
@@ -78,6 +77,7 @@ type Agent struct {
 	devices map[string]*Device
 	pending map[string]*pending // token hash -> pairing
 	ctrl    net.Conn
+	wmu     sync.Mutex                   // serializes writes on the control channel
 	active  map[string]map[net.Conn]bool // device name -> open connections
 }
 
@@ -120,8 +120,37 @@ func (a *Agent) sendCtrl(m wire.Control) {
 	c := a.ctrl
 	a.mu.Unlock()
 	if c != nil {
-		_ = wire.WriteJSON(c, m)
+		a.writeCtrl(c, m)
 	}
+}
+
+// writeCtrl writes one control message. A failed write closes the connection, so the
+// read loop in controlOnce notices and the control channel is rebuilt.
+func (a *Agent) writeCtrl(c net.Conn, m wire.Control) {
+	a.wmu.Lock()
+	defer a.wmu.Unlock()
+	_ = c.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	if err := wire.WriteJSON(c, m); err != nil {
+		c.Close()
+	}
+}
+
+// openPairings returns a pair_open message for every pairing window that is still open,
+// with the remaining lifetime. They are re-sent after the control channel reconnects,
+// because a new relay session starts without any pairing windows.
+func (a *Agent) openPairings(now time.Time) []wire.Control {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out []wire.Control
+	for th, p := range a.pending {
+		left := p.expires.Sub(now)
+		if left <= 0 {
+			continue
+		}
+		secs := int((left + time.Second - 1) / time.Second)
+		out = append(out, wire.Control{Op: "pair_open", Hash: th, TTL: secs})
+	}
+	return out
 }
 
 func (a *Agent) syncDevices() {
@@ -208,14 +237,35 @@ func (a *Agent) controlOnce(tun *wg.Tunnel, addr netip.AddrPort) error {
 	a.mu.Unlock()
 	defer func() { a.mu.Lock(); a.ctrl = nil; a.mu.Unlock() }()
 	a.syncDevices()
+	for _, m := range a.openPairings(time.Now()) {
+		a.writeCtrl(c, m)
+	}
 	log.Printf("control channel to relay established")
-	// The relay sends nothing on the control channel; reading only detects disconnects.
+	// The relay sends nothing on the control channel. A regular ping makes a dead
+	// connection (e.g. after a relay reboot) fail within a minute instead of only on
+	// the next pairing, which would otherwise be lost.
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		t := time.NewTicker(ctrlPingInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				a.writeCtrl(c, wire.Control{Op: "ping"})
+			}
+		}
+	}()
 	_, err = io.Copy(io.Discard, c)
 	if err == nil {
 		err = io.EOF
 	}
 	return err
 }
+
+const ctrlPingInterval = 30 * time.Second
 
 func (a *Agent) handleStream(st net.Conn) {
 	var h wire.StreamHeader
@@ -430,8 +480,8 @@ func (a *Agent) serveAdmin() {
 			http.Error(w, err.Error(), 400)
 			return
 		}
-		fmt.Fprintln(os.Stderr, "pairing QR for", name)
-		qrterminal.GenerateHalfBlock(code, qrterminal.L, os.Stderr)
+		// The code contains the pairing secret, so it goes only to the caller, never to the log.
+		log.Printf("pairing window for %q open for 5 minutes", name)
 		json.NewEncoder(w).Encode(map[string]string{"code": code})
 	})
 	mux.HandleFunc("POST /revoke", func(w http.ResponseWriter, r *http.Request) {
