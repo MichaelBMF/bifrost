@@ -181,6 +181,18 @@ func (r *Relay) Run() error {
 // Tunnel exposes the WireGuard netstack (for tests).
 func (r *Relay) Tunnel() *wg.Tunnel { return r.tun }
 
+// PairingOpen reports whether the agent has opened a pairing window for tokenHash.
+func (r *Relay) PairingOpen(agentID, tokenHash string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	a := r.agents[agentID]
+	if a == nil {
+		return false
+	}
+	exp, ok := a.pairs[tokenHash]
+	return ok && time.Now().Before(exp)
+}
+
 // Ready is closed once the relay accepts connections (for tests).
 func (r *Relay) Ready() <-chan struct{} { return r.ready }
 

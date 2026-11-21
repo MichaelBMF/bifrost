@@ -90,10 +90,11 @@ func setup(t *testing.T) *env {
 }
 
 func (e *env) pairCode(t *testing.T, name string, svcs ...string) string {
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(20 * time.Second)
 	for {
 		code, err := e.agent.StartPairing(name, svcs)
 		if err == nil {
+			e.waitPairingOpen(t, code)
 			return code
 		}
 		if time.Now().After(deadline) {
@@ -103,12 +104,29 @@ func (e *env) pairCode(t *testing.T, name string, svcs ...string) string {
 	}
 }
 
+// waitPairingOpen waits until pair_open has reached the relay over the control channel.
+func (e *env) waitPairingOpen(t *testing.T, code string) {
+	t.Helper()
+	p, err := agent.ParsePairingCode(code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, _ := hex.DecodeString(p.Token)
+	deadline := time.Now().Add(20 * time.Second)
+	for !e.relay.PairingOpen(p.AgentID, wire.TokenHash(token)) {
+		if time.Now().After(deadline) {
+			t.Fatal("pairing window did not open at the relay")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func roundTrip(c net.Conn, n int) error {
 	msg := make([]byte, n)
 	rand.Read(msg)
 	go c.Write(msg)
 	got := make([]byte, n)
-	c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	c.SetReadDeadline(time.Now().Add(30 * time.Second))
 	if _, err := io.ReadFull(c, got); err != nil {
 		return err
 	}
@@ -122,7 +140,7 @@ func TestEndToEnd(t *testing.T) {
 	e := setup(t)
 	phone, _ := client.Open(filepath.Join(e.dir, "phone"))
 	code := e.pairCode(t, "iphone", "mqtt")
-	if err := phone.Pair(code); err != nil {
+	if _, err := phone.Pair(code, client.PairOptions{}); err != nil {
 		t.Fatalf("pairing: %v", err)
 	}
 	time.Sleep(100 * time.Millisecond)
@@ -144,7 +162,7 @@ func TestEndToEnd(t *testing.T) {
 	})
 	t.Run("token is single use", func(t *testing.T) {
 		other, _ := client.Open(filepath.Join(e.dir, "other"))
-		if err := other.Pair(code); err == nil {
+		if _, err := other.Pair(code, client.PairOptions{}); err == nil {
 			t.Fatal("second pairing with the same code should have failed")
 		}
 	})

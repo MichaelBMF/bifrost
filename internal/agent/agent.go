@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -50,40 +49,27 @@ type Device struct {
 	RelayID  string   `json:"relay_id"`
 	Services []string `json:"services"`
 	Added    string   `json:"added"`
+	// User and DeviceName come from the app during pairing. They are informational
+	// (self-asserted by the app) unless the admin bound a user with `bifrost pair -user`;
+	// then UserBound is true and User was verified against that binding.
+	User       string `json:"user,omitempty"`
+	DeviceName string `json:"device_name,omitempty"`
+	UserBound  bool   `json:"user_bound,omitempty"`
 }
 
 type pending struct {
 	token    []byte
 	name     string
+	user     string // optional, set by the admin; the app must present the same user
 	services []string
 	expires  time.Time
 }
 
-// PairingCode is the content of the QR code.
-type PairingCode struct {
-	Relay    string `json:"r"`
-	RelayPin string `json:"p"`
-	AgentID  string `json:"a"`
-	AgentPub string `json:"k"`
-	Token    string `json:"t"`
-}
+// PairingCode is the content of the QR code (kept here for compatibility).
+type PairingCode = wire.PairingCode
 
-func (p PairingCode) String() string {
-	b, _ := json.Marshal(p)
-	return "bifrost1:" + base64.RawURLEncoding.EncodeToString(b)
-}
-
-func ParsePairingCode(s string) (PairingCode, error) {
-	var p PairingCode
-	if !strings.HasPrefix(s, "bifrost1:") {
-		return p, errors.New("not a bifrost1 code")
-	}
-	b, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(s, "bifrost1:"))
-	if err != nil {
-		return p, err
-	}
-	return p, json.Unmarshal(b, &p)
-}
+// ParsePairingCode parses a "bifrost1:" code (kept here for compatibility).
+func ParsePairingCode(s string) (PairingCode, error) { return wire.ParsePairingCode(s) }
 
 type Agent struct {
 	cfg     *Config
@@ -324,23 +310,30 @@ func (a *Agent) handlePair(st net.Conn, h wire.StreamHeader) error {
 	// With IKpsk2, only the first transport message proves that the app knows the token.
 	// Nothing is stored before that, so even a compromised relay that knows the
 	// token hash cannot slip in a device.
-	var req struct {
-		RelayID string `json:"relay_id"`
-	}
+	var req wire.PairRequest
 	if err := sc.ReadJSON(&req); err != nil {
 		return fmt.Errorf("invalid pairing confirmation (wrong token?): %w", err)
 	}
+	defer sc.Close()
 	if req.RelayID != h.RelayID {
 		return errors.New("relay key in pairing does not match connection")
 	}
+	user, devName := wire.CleanLabel(req.User), wire.CleanLabel(req.DeviceName)
 	a.mu.Lock()
 	if a.pending[h.TokenHash] != p { // already used
 		a.mu.Unlock()
 		return errors.New("token already used")
 	}
-	delete(a.pending, h.TokenHash) // single-use token
+	delete(a.pending, h.TokenHash) // single-use token, also burned on a user mismatch
+	if p.user != "" && user != p.user {
+		a.mu.Unlock()
+		a.sendCtrl(wire.Control{Op: "pair_close", Hash: h.TokenHash})
+		_ = sc.WriteJSON(wire.PairResponse{Error: "user does not match pairing"})
+		return fmt.Errorf("pairing %q: user %q does not match bound user %q, token burned", p.name, user, p.user)
+	}
 	a.devices[p.name] = &Device{NoisePub: hex.EncodeToString(peer), RelayID: req.RelayID,
-		Services: p.services, Added: time.Now().Format(time.RFC3339)}
+		Services: p.services, Added: time.Now().Format(time.RFC3339),
+		User: user, DeviceName: devName, UserBound: p.user != ""}
 	err = a.saveLocked()
 	a.mu.Unlock()
 	if err != nil {
@@ -348,10 +341,11 @@ func (a *Agent) handlePair(st net.Conn, h wire.StreamHeader) error {
 	}
 	a.sendCtrl(wire.Control{Op: "pair_close", Hash: h.TokenHash})
 	a.syncDevices()
-	log.Printf("paired device %q, fingerprint %s, services %v", p.name, keys.Fingerprint(peer), p.services)
-	_ = sc.WriteJSON(map[string]any{"ok": true, "name": p.name, "services": p.services,
-		"device_fp": keys.Fingerprint(peer), "agent_fp": keys.Fingerprint(a.id.Noise.Public)})
-	sc.Close()
+	log.Printf("paired device %q (user %q, device name %q), fingerprint %s, services %v",
+		p.name, user, devName, keys.Fingerprint(peer), p.services)
+	_ = sc.WriteJSON(wire.PairResponse{OK: true, Name: p.name, Services: p.services,
+		DeviceFP: keys.Fingerprint(peer), AgentFP: keys.Fingerprint(a.id.Noise.Public),
+		User: user, DeviceName: devName})
 	return nil
 }
 
@@ -370,6 +364,15 @@ func (a *Agent) track(name string, c net.Conn, add bool) {
 
 // StartPairing creates a single-use token (5 minutes) and returns the QR content.
 func (a *Agent) StartPairing(name string, services []string) (string, error) {
+	return a.StartPairingForUser(name, "", services)
+}
+
+// StartPairingForUser is StartPairing with an optional user binding: if user is not
+// empty, the app must present exactly this user name, otherwise pairing is rejected.
+func (a *Agent) StartPairingForUser(name, user string, services []string) (string, error) {
+	if user != "" && wire.CleanLabel(user) != user {
+		return "", errors.New("invalid user name")
+	}
 	for _, s := range services {
 		if _, ok := a.cfg.Services[s]; !ok {
 			return "", fmt.Errorf("service %q is not configured", s)
@@ -386,7 +389,7 @@ func (a *Agent) StartPairing(name string, services []string) (string, error) {
 		a.mu.Unlock()
 		return "", errors.New("not connected to relay")
 	}
-	a.pending[th] = &pending{token: token, name: name, services: services, expires: time.Now().Add(ttl)}
+	a.pending[th] = &pending{token: token, name: name, user: user, services: services, expires: time.Now().Add(ttl)}
 	a.mu.Unlock()
 	a.sendCtrl(wire.Control{Op: "pair_open", Hash: th, TTL: int(ttl.Seconds())})
 	code := PairingCode{Relay: a.cfg.Relay, RelayPin: a.cfg.RelayPin, AgentID: a.cfg.AgentID,
@@ -422,7 +425,7 @@ func (a *Agent) serveAdmin() {
 			http.Error(w, "name missing", 400)
 			return
 		}
-		code, err := a.StartPairing(name, svcs)
+		code, err := a.StartPairingForUser(name, r.URL.Query().Get("user"), svcs)
 		if err != nil {
 			http.Error(w, err.Error(), 400)
 			return
@@ -442,7 +445,15 @@ func (a *Agent) serveAdmin() {
 		out := map[string]any{}
 		for n, d := range a.devices {
 			pub, _ := hex.DecodeString(d.NoisePub)
-			out[n] = map[string]any{"fingerprint": keys.Fingerprint(pub), "services": d.Services, "added": d.Added}
+			e := map[string]any{"fingerprint": keys.Fingerprint(pub), "services": d.Services, "added": d.Added}
+			if d.User != "" {
+				e["user"] = d.User
+				e["user_bound"] = d.UserBound
+			}
+			if d.DeviceName != "" {
+				e["device_name"] = d.DeviceName
+			}
+			out[n] = e
 		}
 		json.NewEncoder(w).Encode(out)
 	})
