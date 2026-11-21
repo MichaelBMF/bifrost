@@ -192,7 +192,7 @@ Setup next to asgard (see `examples/hlidskjalf.json`; the unit
 bifrost hlidskjalf -hash                      # prints a bcrypt hash; put it into the config
 install -m 600 hlidskjalf.json /etc/bifrost/hlidskjalf.json
 systemctl enable --now bifrost-hlidskjalf
-journalctl -u bifrost-hlidskjalf | grep fingerprint
+journalctl -u bifrost-hlidskjalf | grep SHA-256   # certificate fingerprint
 ```
 
 ## How it works
