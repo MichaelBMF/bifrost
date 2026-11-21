@@ -19,11 +19,12 @@ Prototype for the "Home Lab Relay: Architecture" design, variant **v2**:
 | `internal/agent` | In-process WireGuard with keepalive, control channel with backoff, Noise responder, per-device services, pairing, revocation, admin API |
 | `internal/wg` | In-process WireGuard tunnel (wireguard-go, netstack) |
 | `internal/client` | The app's tunnel core: pairing and local port forwarding |
+| `mobile` | gomobile binding of the tunnel core for iOS (`Bifrost.xcframework`) |
 | `internal/wire` | Framing, Noise handshake, `SecureConn`, TLS pinning |
 | `internal/keys` | Ed25519 (TLS), X25519 (Noise and WireGuard), fingerprints |
 | `internal/e2e` | End-to-end test including attack scenarios |
 
-Not yet included: push (APNs/FCM/ntfy), a real mobile app, metrics, P-256 keys in the Secure Enclave.
+Not yet included: push (APNs/FCM/ntfy), metrics, P-256 keys in the Secure Enclave.
 
 ## Build and test
 
@@ -47,13 +48,111 @@ closes active connections immediately.
    Restart the relay.
 3. Open on the VPS: TCP 443 (devices) and UDP 51820 (WireGuard). At home: nothing.
 4. Pair a device: `bifrost pair -name iphone -services mqtt` shows a QR code and `bifrost1:…`
-   (valid for 5 minutes, single use).
-5. Pair the "app": `bifrost client pair -state phone -code bifrost1:…`.
+   (valid for 5 minutes, single use). Add `-user alice` to bind the code to an app user
+   (see [User and device name](#user-and-device-name)).
+5. Pair the "app": `bifrost client pair -state phone -code bifrost1:… [-user alice] [-device-name "Alice's iPhone"]`.
 6. Open a tunnel: `bifrost client forward -state phone -L mqtt=127.0.0.1:11883`,
    then e.g. `mosquitto_sub -h 127.0.0.1 -p 11883 -t 'home/#'`.
 7. List and revoke devices: `bifrost devices`, `bifrost revoke -name iphone`.
 
 Bind the agent's admin API (`admin`) to `127.0.0.1` or the LAN only.
+
+## User and device name
+
+During pairing the app may send two optional labels in its first encrypted message,
+next to the relay key:
+
+```json
+{"relay_id": "…", "user": "alice", "device_name": "Alice's iPhone"}
+```
+
+The agent stores them on the device record (`user`, `device_name`) and shows them in
+`bifrost devices`. They are trimmed, stripped of control characters and limited to 64
+characters. The name given with `bifrost pair -name` stays the primary key: revocation,
+logs and the service allowlist all use it.
+
+Backward compatible in both directions: old apps that send only `relay_id` still pair
+(the labels stay empty), and old agents ignore the new fields.
+
+Security:
+
+- `user` and `device_name` are **self-asserted** by the app. Whoever holds the pairing
+  code can claim any user. Without a binding they are informational only; do not base
+  authorization on them.
+- `bifrost pair -name iphone -services mqtt -user alice` binds the code to a user: the app
+  must send exactly `alice`, otherwise the agent rejects the pairing and **burns the
+  token** (a second try with the same code fails), so the user name cannot be guessed
+  with one code. The device record then has `"user_bound": true`. This protects against a
+  leaked QR code being used by someone who does not know the user name, but it is not
+  authentication of the user: the user name is not a secret.
+- Like the rest of the pairing confirmation, the labels travel inside Noise
+  (`Noise_IKpsk2`); the relay never sees them.
+
+## Mobile (iOS) binding
+
+Package `mobile` wraps the tunnel core for [gomobile](https://pkg.go.dev/golang.org/x/mobile/cmd/gomobile).
+It does not depend on wireguard-go or gVisor (checked by a test and by the build script),
+so the framework stays small.
+
+Build the framework (needs Xcode and Go; installs gomobile/gobind in the version pinned in `go.mod`):
+
+```sh
+scripts/build-ios.sh <output-dir>       # -> <output-dir>/Bifrost.xcframework (ios + iossimulator)
+```
+
+`IOS_MIN` (default `16.0`) sets the deployment target. Add the xcframework to the app target
+("Embed & Sign" is not needed, it is a static framework) and `import Bifrost`.
+
+The Go API, with the generated Swift signatures:
+
+| Go | Swift |
+| --- | --- |
+| `NewClient(stateDir string) (*Client, error)` | `MobileNewClient(_ stateDir: String?, _ error: NSErrorPointer) -> MobileClient?` |
+| `(*Client) IsPaired() bool` | `func isPaired() -> Bool` |
+| `(*Client) Info() string` | `func info() -> String` (JSON) |
+| `(*Client) Pair(code, user, deviceName string) (string, error)` | `func pair(_ code: String?, user: String?, deviceName: String?, error: NSErrorPointer) -> String` (JSON) |
+| `(*Client) StartForward(service string, port int) (int, error)` | `func startForward(_ service: String?, port: Int, ret0_: UnsafeMutablePointer<Int>?) throws` |
+| `(*Client) ForwardPort(service string) int` | `func forwardPort(_ service: String?) -> Int` |
+| `(*Client) StopForward(service string)` | `func stopForward(_ service: String?)` |
+| `(*Client) StopAll()` | `func stopAll()` |
+| `(*Client) Probe(service string) error` | `func probe(_ service: String?) throws` |
+| `(*Client) Unpair() error` | `func unpair() throws` |
+
+```swift
+import Bifrost
+
+let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    .appendingPathComponent("bifrost").path
+var err: NSError?
+guard let tunnel = MobileNewClient(dir, &err) else { throw err! }
+
+if !tunnel.isPaired() {
+    var perr: NSError?
+    let result = tunnel.pair(scannedCode, user: "alice", deviceName: UIDevice.current.name, error: &perr)
+    if let perr { throw perr }
+    print(result)   // {"name":"iphone","services":["mqtt"],"user":"alice",...}
+}
+
+var port = 0
+try tunnel.startForward("mqtt", port: 0, ret0_: &port)   // 0 = pick a free port
+// connect the MQTT client to 127.0.0.1:port
+```
+
+Notes for the app:
+
+- `stateDir` holds `bifrost.key` (device keys, mode 0600) and `bifrost.json` (pairing state).
+  Exclude it from iCloud backup if the identity should not move to another device.
+- `Info()` returns `{"paired", "relay", "agent_id", "services", "name", "user", "device_name",
+  "device_fp", "agent_fp", "paired_at", "forwards": {"mqtt": 54321}}`. `device_fp` exists
+  before pairing, so it can be shown for comparison with the agent log.
+- Every connection to the local port opens its own end-to-end tunnel. iOS suspends the app
+  in the background; call `stopAll()` there and `startForward` again when it becomes active
+  (with `port: 0` this may return a different port).
+- `Probe("mqtt")` checks the whole path (relay, pin, device allowed, Noise, service reachable)
+  with a 20 s timeout.
+- `Unpair()` deletes the pairing state and replaces the keys, but does not notify the agent;
+  revoke the device there with `bifrost revoke -name …`.
+- `Pair` fails if the client is already paired; call `Unpair()` first.
 
 ## How it works
 
@@ -66,7 +165,7 @@ Bind the agent's admin API (`admin`) to `127.0.0.1` or the LAN only.
 4. iPhone ↔ agent: Noise_IK. The agent checks that the Noise key and the relay key belong
    to the same device, then `{"open":"mqtt"}`; the target comes only from `asgard.json`.
 5. Pairing: `Noise_IKpsk2` with the token from the QR code as PSK. The device is stored only after
-   the app's first encrypted message.
+   the app's first encrypted message `{"relay_id", "user"?, "device_name"?}`.
 
 All messages are `[2-byte length][data]`.
 
