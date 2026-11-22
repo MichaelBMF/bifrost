@@ -116,7 +116,7 @@ its MQTT access immediately, and the broker password never leaves the home lab.
 
 ```json
 "mqtt_gateways": {
-  "mqtt": {
+  "midgard": {
     "broker": "127.0.0.1:1883",
     "username": "midgard",
     "password_file": "${CREDENTIALS_DIRECTORY}/bifrost-mqtt-midgard",
@@ -127,7 +127,8 @@ its MQTT access immediately, and the broker password never leaves the home lab.
 ```
 
 Gateway names share the namespace with `services` and are paired the same way
-(`bifrost pair -name iphone -services mqtt`). Keep the password root-only and let systemd
+(`bifrost pair -name iphone -services midgard`). A plain `mqtt` service can stay next to
+the gateway for devices that log in to the broker themselves. Keep the password root-only and let systemd
 pass it in (the shipped unit has `ImportCredential=bifrost-*`):
 
 ```sh
