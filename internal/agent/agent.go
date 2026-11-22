@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/MichaelBMF/bifrost/internal/keys"
+	"github.com/MichaelBMF/bifrost/internal/mqttgw"
 	"github.com/MichaelBMF/bifrost/internal/wg"
 	"github.com/MichaelBMF/bifrost/internal/wire"
 )
@@ -41,6 +42,19 @@ type Config struct {
 	StateFile       string            `json:"state_file"` // device list
 	Admin           string            `json:"admin"`      // LAN/localhost only, e.g. 127.0.0.1:7070
 	Services        map[string]string `json:"services"`   // name -> target host:port
+	// MQTTGateways are services where the agent speaks MQTT for the device: it logs in
+	// to the broker with its own credentials and checks every publish/subscribe
+	// against the gateway's topic allowlist. The device needs no broker password.
+	MQTTGateways map[string]*mqttgw.Config `json:"mqtt_gateways"`
+}
+
+// hasService reports whether name is a configured service (plain or MQTT gateway).
+func (c *Config) hasService(name string) bool {
+	if _, ok := c.Services[name]; ok {
+		return true
+	}
+	_, ok := c.MQTTGateways[name]
+	return ok
 }
 
 type Device struct {
@@ -87,7 +101,21 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, err
 	}
 	var c Config
-	return &c, json.Unmarshal(b, &c)
+	if err := json.Unmarshal(b, &c); err != nil {
+		return nil, err
+	}
+	for name, gw := range c.MQTTGateways {
+		if _, dup := c.Services[name]; dup {
+			return nil, fmt.Errorf("service %q is defined in services and mqtt_gateways", name)
+		}
+		if gw == nil {
+			return nil, fmt.Errorf("mqtt_gateways.%s is empty", name)
+		}
+		if err := gw.Load(); err != nil {
+			return nil, fmt.Errorf("mqtt_gateways.%s: %w", name, err)
+		}
+	}
+	return &c, nil
 }
 
 func New(cfg *Config) (*Agent, error) {
@@ -324,11 +352,24 @@ func (a *Agent) handleDial(st net.Conn, h wire.StreamHeader) error {
 	if err := sc.ReadJSON(&req); err != nil {
 		return err
 	}
-	target, ok := a.cfg.Services[req.Open]
-	if !ok || !slices.Contains(dev.Services, req.Open) {
+	if !a.cfg.hasService(req.Open) || !slices.Contains(dev.Services, req.Open) {
 		_ = sc.WriteJSON(wire.Status{Error: "service not allowed"})
 		return fmt.Errorf("%s: service %q not allowed", name, req.Open)
 	}
+	if gw := a.cfg.MQTTGateways[req.Open]; gw != nil {
+		if err := sc.WriteJSON(wire.Status{OK: true}); err != nil {
+			return err
+		}
+		log.Printf("%s -> %s (MQTT gateway to %s)", name, req.Open, gw.Broker)
+		a.track(name, sc, true)
+		err := gw.Serve(name, sc)
+		a.track(name, sc, false)
+		if err != nil {
+			log.Printf("%s: %s: %v", name, req.Open, err)
+		}
+		return nil
+	}
+	target := a.cfg.Services[req.Open]
 	up, err := net.DialTimeout("tcp", target, 5*time.Second)
 	if err != nil {
 		_ = sc.WriteJSON(wire.Status{Error: "service unreachable"})
@@ -424,7 +465,7 @@ func (a *Agent) StartPairingForUser(name, user string, services []string) (strin
 		return "", errors.New("invalid user name")
 	}
 	for _, s := range services {
-		if _, ok := a.cfg.Services[s]; !ok {
+		if !a.cfg.hasService(s) {
 			return "", fmt.Errorf("service %q is not configured", s)
 		}
 	}

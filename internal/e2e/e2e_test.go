@@ -19,6 +19,7 @@ import (
 	"github.com/MichaelBMF/bifrost/internal/agent"
 	"github.com/MichaelBMF/bifrost/internal/client"
 	"github.com/MichaelBMF/bifrost/internal/keys"
+	"github.com/MichaelBMF/bifrost/internal/mqttgw"
 	"github.com/MichaelBMF/bifrost/internal/relay"
 	"github.com/MichaelBMF/bifrost/internal/wire"
 )
@@ -81,7 +82,8 @@ func setup(t *testing.T) *env {
 		RelayWGEndpoint: fmt.Sprintf("127.0.0.1:%d", wgPort), RelayWGPub: rid.WGPublic(),
 		RelayTunnelIP: "10.8.0.1", ControlPort: 7000, TunnelIP: "10.8.0.2", StreamPort: 9000,
 		KeyFile: filepath.Join(dir, "agent.key"), StateFile: filepath.Join(dir, "devices.json"),
-		Services: map[string]string{"mqtt": echoServer(t), "ha": echoServer(t)}})
+		Services:     map[string]string{"mqtt": echoServer(t), "ha": echoServer(t)},
+		MQTTGateways: map[string]*mqttgw.Config{"mqttgw": gatewayConfig(t)}})
 	if err != nil {
 		t.Fatal(err)
 	}
