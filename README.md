@@ -109,6 +109,11 @@ speaks MQTT through its tunnel **without any broker credentials**; the agent dec
 - Every PUBLISH must match a filter in `publish`, every SUBSCRIBE must lie within a filter
   in `subscribe` (`+` and `#` allowed). Anything else ends the session before it reaches
   the broker. A will message is kept only if its topic is allowed.
+- **Sender identity:** every published JSON object gets a field set by the agent from the
+  pairing, e.g. `"bifrost": {"device": "michael-iphone", "user": "michael", "user_bound": true}`.
+  A `bifrost` field sent by the device is overwritten, so the receiver can trust it. Other
+  payloads pass unchanged. Turn it off per gateway with `"identity": false`.
+- The agent log shows every publish with device, user and topic.
 - Only MQTT 3.1.1 is supported.
 
 The pairing is the only credential the device holds: revoking the device in bifrost ends

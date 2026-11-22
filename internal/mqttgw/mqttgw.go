@@ -9,10 +9,13 @@ package mqttgw
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
 	"regexp"
@@ -32,9 +35,23 @@ type Config struct {
 	// publish to topics matched by Publish and subscribe to filters within Subscribe.
 	Publish   []string `json:"publish"`
 	Subscribe []string `json:"subscribe"`
+	// Identity adds the sender to every JSON-object payload the device publishes, as
+	// "bifrost": {"device": ..., "user": ..., "user_bound": ...}. These values come from
+	// the pairing, not from the app, so the receiver (e.g. Home Assistant) can trust
+	// them. Any "bifrost" field sent by the device is replaced. Default: on.
+	Identity *bool `json:"identity,omitempty"`
 
 	password string
 }
+
+// Peer is the paired device behind a gateway session.
+type Peer struct {
+	Device    string `json:"device"`               // name from `bifrost pair -name`
+	User      string `json:"user,omitempty"`       // user from the pairing
+	UserBound bool   `json:"user_bound,omitempty"` // true if the admin bound the user (`-user`)
+}
+
+func (c *Config) identity() bool { return c.Identity == nil || *c.Identity }
 
 // Load validates the config and reads the password file.
 func (c *Config) Load() error {
@@ -216,20 +233,38 @@ func (c *Config) rewriteConnect(p packet, device string) (packet, error) {
 	return packet{header: 0x10, body: out}, nil
 }
 
-// check enforces the allowlist on device-to-broker packets.
-func (c *Config) check(p packet) error {
+// check enforces the allowlist on device-to-broker packets and stamps the sender
+// identity into published JSON objects.
+func (c *Config) check(p packet, peer Peer) (packet, error) {
 	switch p.typ() {
 	case 1:
-		return errors.New("second CONNECT")
+		return p, errors.New("second CONNECT")
 	case 3: // PUBLISH
 		r := &reader{b: p.body}
 		topic := r.str()
 		if r.err != nil {
-			return r.err
+			return p, r.err
 		}
 		if !matchAny(c.Publish, topic) {
-			return fmt.Errorf("%w: publish to %q", ErrDenied, topic)
+			return p, fmt.Errorf("%w: publish to %q", ErrDenied, topic)
 		}
+		head := len(p.body) - len(r.b) // topic
+		if (p.header>>1)&3 > 0 {
+			head += 2 // packet identifier
+		}
+		if head > len(p.body) {
+			return p, errors.New("short packet")
+		}
+		payload := p.body[head:]
+		stamped := false
+		if c.identity() {
+			if out, ok := stamp(payload, peer); ok {
+				p = packet{header: p.header, body: append(append([]byte{}, p.body[:head]...), out...)}
+				stamped = true
+			}
+		}
+		log.Printf("mqtt %s (user %q): publish %s, %d bytes%s", peer.Device, peer.User, topic, len(payload),
+			map[bool]string{true: ", identity added", false: ""}[stamped])
 	case 8: // SUBSCRIBE
 		r := &reader{b: p.body}
 		r.u16()
@@ -237,16 +272,39 @@ func (c *Config) check(p packet) error {
 			f := r.str()
 			r.u8()
 			if r.err == nil && !coveredByAny(c.Subscribe, f) {
-				return fmt.Errorf("%w: subscribe to %q", ErrDenied, f)
+				return p, fmt.Errorf("%w: subscribe to %q", ErrDenied, f)
 			}
 		}
-		return r.err
+		return p, r.err
 	}
-	return nil
+	return p, nil
+}
+
+// stamp sets payload["bifrost"] = peer if the payload is a JSON object.
+func stamp(payload []byte, peer Peer) ([]byte, bool) {
+	trimmed := bytes.TrimSpace(payload)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return nil, false
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &obj); err != nil {
+		return nil, false
+	}
+	id, err := json.Marshal(peer)
+	if err != nil {
+		return nil, false
+	}
+	obj["bifrost"] = id
+	out, err := json.Marshal(obj)
+	if err != nil || len(out) > maxPacket-1024 {
+		return nil, false
+	}
+	return out, true
 }
 
 // Serve runs one device connection until either side closes it.
-func (c *Config) Serve(device string, client net.Conn) error {
+func (c *Config) Serve(peer Peer, client net.Conn) error {
+	device := peer.Device
 	defer client.Close()
 	cr := bufio.NewReader(client)
 	client.SetReadDeadline(time.Now().Add(15 * time.Second))
@@ -292,7 +350,9 @@ func (c *Config) Serve(device string, client net.Conn) error {
 			stop(err)
 			break
 		}
-		if err := c.check(p); err != nil {
+		p, err = c.check(p, peer)
+		if err != nil {
+			log.Printf("mqtt %s (user %q): %v", peer.Device, peer.User, err)
 			stop(err)
 			break
 		}

@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -142,7 +143,7 @@ func TestGatewayInjectsCredentialsAndFilters(t *testing.T) {
 	gw := newGateway(t, addr)
 	dev, gwSide := net.Pipe()
 	done := make(chan error, 1)
-	go func() { done <- gw.Serve("michael-iphone", gwSide) }()
+	go func() { done <- gw.Serve(Peer{Device: "michael-iphone", User: "michael", UserBound: true}, gwSide) }()
 
 	// The device sends its own (wrong) credentials; they must be replaced.
 	go dev.Write(connectPacket("app1", "intruder", "guess").bytes())
@@ -165,9 +166,16 @@ func TestGatewayInjectsCredentialsAndFilters(t *testing.T) {
 	if p := next(t, got); p.typ() != 8 {
 		t.Fatalf("expected SUBSCRIBE, got type %d", p.typ())
 	}
-	go dev.Write(publishPacket("midgard/tg/command", `{"action":"einfahren"}`).bytes())
-	if p := next(t, got); p.typ() != 3 {
+	// The device tries to claim another identity; the gateway overwrites it.
+	go dev.Write(publishPacket("midgard/tg/command", `{"action":"einfahren","bifrost":{"device":"fake"}}`).bytes())
+	p := next(t, got)
+	if p.typ() != 3 {
 		t.Fatalf("expected PUBLISH, got type %d", p.typ())
+	}
+	want := `"bifrost":{"device":"michael-iphone","user":"michael","user_bound":true}`
+	if !strings.Contains(string(p.body), want) || strings.Contains(string(p.body), "fake") ||
+		!strings.Contains(string(p.body), `"action":"einfahren"`) {
+		t.Fatalf("payload not stamped: %q", p.body)
 	}
 
 	// A publish outside the allowlist ends the session and never reaches the broker.
@@ -192,7 +200,7 @@ func TestGatewayDeniesWideSubscribe(t *testing.T) {
 	gw := newGateway(t, addr)
 	dev, gwSide := net.Pipe()
 	done := make(chan error, 1)
-	go func() { done <- gw.Serve("d", gwSide) }()
+	go func() { done <- gw.Serve(Peer{Device: "d"}, gwSide) }()
 	go dev.Write(connectPacket("x", "", "").bytes())
 	next(t, got)
 	dev.Read(make([]byte, 4))
@@ -206,7 +214,7 @@ func TestGatewayRejectsNonConnect(t *testing.T) {
 	gw := newGateway(t, "127.0.0.1:1")
 	dev, gwSide := net.Pipe()
 	done := make(chan error, 1)
-	go func() { done <- gw.Serve("d", gwSide) }()
+	go func() { done <- gw.Serve(Peer{Device: "d"}, gwSide) }()
 	go dev.Write(publishPacket("midgard/tg/command", "x").bytes())
 	dev.Read(make([]byte, 4))
 	if err := <-done; err == nil {
@@ -225,5 +233,33 @@ func TestLoadValidates(t *testing.T) {
 		if err := c.Load(); err == nil {
 			t.Errorf("config %d: expected error", i)
 		}
+	}
+}
+
+func TestStamp(t *testing.T) {
+	peer := Peer{Device: "d", User: "u"}
+	if _, ok := stamp([]byte("einfahren"), peer); ok {
+		t.Fatal("plain payload must stay as is")
+	}
+	if _, ok := stamp([]byte("[1,2]"), peer); ok {
+		t.Fatal("JSON array must stay as is")
+	}
+	out, ok := stamp([]byte(` {"action":"x"} `), peer)
+	if !ok || string(out) != `{"action":"x","bifrost":{"device":"d","user":"u"}}` {
+		t.Fatalf("got %q", out)
+	}
+}
+
+func TestQoS1PublishStamped(t *testing.T) {
+	gw := &Config{Broker: "h:1", Publish: []string{"a/#"}}
+	body := append(putStr(nil, "a/b"), 0, 7) // packet id 7
+	body = append(body, `{"k":1}`...)
+	p, err := gw.check(packet{header: 0x32, body: body}, Peer{Device: "d"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &reader{b: p.body}
+	if r.str() != "a/b" || r.u16() != 7 || string(r.b) != `{"bifrost":{"device":"d"},"k":1}` {
+		t.Fatalf("bad packet: %q", p.body)
 	}
 }

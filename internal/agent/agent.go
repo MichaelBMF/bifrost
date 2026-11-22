@@ -362,7 +362,7 @@ func (a *Agent) handleDial(st net.Conn, h wire.StreamHeader) error {
 		}
 		log.Printf("%s -> %s (MQTT gateway to %s)", name, req.Open, gw.Broker)
 		a.track(name, sc, true)
-		err := gw.Serve(name, sc)
+		err := gw.Serve(mqttgw.Peer{Device: name, User: dev.User, UserBound: dev.UserBound}, sc)
 		a.track(name, sc, false)
 		if err != nil {
 			log.Printf("%s: %s: %v", name, req.Open, err)
