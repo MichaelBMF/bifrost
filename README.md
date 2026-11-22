@@ -17,6 +17,7 @@ Prototype for the "Home Lab Relay: Architecture" design, variant **v2**:
 | --- | --- |
 | `internal/relay` | TLS for devices, key allowlist, per-IP rate limit, one WireGuard peer per agent, control channel, one TCP connection through the tunnel per device connection |
 | `internal/agent` | In-process WireGuard with keepalive, control channel with backoff, Noise responder, per-device services, pairing, revocation, admin API |
+| `internal/mqttgw` | MQTT gateway: broker credentials stay with the agent, per-service topic allowlist |
 | `internal/web` | Hlidskjalf: web UI for devices and pairing (login, QR codes, revoke) |
 | `internal/wg` | In-process WireGuard tunnel (wireguard-go, netstack) |
 | `internal/client` | The app's tunnel core: pairing and local port forwarding |
@@ -96,6 +97,52 @@ Security:
   authentication of the user: the user name is not a secret.
 - Like the rest of the pairing confirmation, the labels travel inside Noise
   (`Noise_IKpsk2`); the relay never sees them.
+
+## MQTT gateway
+
+A service can be an **MQTT gateway** instead of a plain TCP forward. The device then
+speaks MQTT through its tunnel **without any broker credentials**; the agent decides:
+
+- It replaces the credentials in the device's CONNECT with its own (`username` and the
+  password from `password_file`) and prefixes the client ID with the device name, so the
+  broker log shows which device is connected.
+- Every PUBLISH must match a filter in `publish`, every SUBSCRIBE must lie within a filter
+  in `subscribe` (`+` and `#` allowed). Anything else ends the session before it reaches
+  the broker. A will message is kept only if its topic is allowed.
+- **Sender identity:** every published JSON object gets a field set by the agent from the
+  pairing, e.g. `"bifrost": {"device": "michael-iphone", "user": "michael", "user_bound": true}`.
+  A `bifrost` field sent by the device is overwritten, so the receiver can trust it. Other
+  payloads pass unchanged. Turn it off per gateway with `"identity": false`.
+- The agent log shows every publish with device, user and topic.
+- Only MQTT 3.1.1 is supported.
+
+The pairing is the only credential the device holds: revoking the device in bifrost ends
+its MQTT access immediately, and the broker password never leaves the home lab.
+
+```json
+"mqtt_gateways": {
+  "midgard": {
+    "broker": "127.0.0.1:1883",
+    "username": "midgard",
+    "password_file": "${CREDENTIALS_DIRECTORY}/bifrost-mqtt-midgard",
+    "publish": ["midgard/+/command"],
+    "subscribe": ["midgard/#"]
+  }
+}
+```
+
+Gateway names share the namespace with `services` and are paired the same way
+(`bifrost pair -name iphone -services midgard`). A plain `mqtt` service can stay next to
+the gateway for devices that log in to the broker themselves. Keep the password root-only and let systemd
+pass it in (the shipped unit has `ImportCredential=bifrost-*`):
+
+```sh
+install -d -m 700 /etc/credstore
+install -m 600 /dev/stdin /etc/credstore/bifrost-mqtt-midgard   # type the password, then Ctrl-D
+systemctl restart bifrost-asgard
+```
+
+`password_file` expands environment variables; outside systemd any readable path works.
 
 ## Mobile (iOS) binding
 

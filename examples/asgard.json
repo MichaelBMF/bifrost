@@ -14,5 +14,14 @@
   "services": {
     "mqtt": "127.0.0.1:1883",
     "ha": "192.168.10.20:8123"
+  },
+  "mqtt_gateways": {
+    "midgard": {
+      "broker": "127.0.0.1:1883",
+      "username": "midgard",
+      "password_file": "${CREDENTIALS_DIRECTORY}/bifrost-mqtt-midgard",
+      "publish": ["midgard/+/command"],
+      "subscribe": ["midgard/#"]
+    }
   }
 }
