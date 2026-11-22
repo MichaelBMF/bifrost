@@ -95,7 +95,22 @@ func installedVersion() (string, error) {
 	if err != nil || !strings.HasPrefix(string(out), "install ok installed|") {
 		return "", errors.New("bifrost is not installed from the .deb package (see docs/install.md)")
 	}
-	return update.ParseTag(strings.SplitN(string(out), "|", 2)[1])
+	v := strings.SplitN(string(out), "|", 2)[1]
+	tag, err := update.ParseTag(debVersionToTag(v))
+	if err != nil {
+		return "", fmt.Errorf("the installed package \"bifrost\" (version %s) is not this project's; "+
+			"reinstall the release .deb (see docs/install.md)", strings.TrimSpace(v))
+	}
+	return tag, nil
+}
+
+// debVersionToTag strips the Debian epoch ("1:0.3.1" -> "0.3.1"). Packages from
+// v0.3.1 on carry epoch 1 so they stay newer than Debian's unrelated "bifrost".
+func debVersionToTag(v string) string {
+	if i := strings.IndexByte(v, ':'); i >= 0 {
+		v = v[i+1:]
+	}
+	return strings.TrimSpace(v)
 }
 
 func debArch() string {

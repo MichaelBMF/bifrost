@@ -33,6 +33,9 @@ nfpms:
   - id: bifrost
     ids: [bifrost]
     package_name: bifrost
+    # Epoch 1: Debian has an unrelated package "bifrost" (1.3.x). The epoch keeps
+    # ours newer for apt; the pin below keeps Debian's from being installed at all.
+    epoch: "1"
     file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Arch }}"
     formats: [deb]
     vendor: MichaelBMF
@@ -67,6 +70,9 @@ nfpms:
         dst: /usr/bin/bifrost-check
         file_info:
           mode: 0755
+      - src: packaging/deb/apt-preferences
+        dst: /etc/apt/preferences.d/bifrost
+        type: config
       - src: packaging/deb/sysusers.conf
         dst: /usr/lib/sysusers.d/bifrost.conf
       - src: packaging/deb/tmpfiles.conf
