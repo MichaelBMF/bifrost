@@ -6,6 +6,14 @@ Releases ship a Debian package per architecture (`bifrost_<version>_amd64.deb`,
 The public key is `packaging/minisign.pub` in this repository and is attached
 to every release.
 
+
+> **Debian has an unrelated package that is also called `bifrost`** (version 1.3.x).
+> Up to v0.3.0, `unattended-upgrades` could replace this project's package with it,
+> which removes `/usr/bin/bifrost`. From v0.3.1 on, the package has epoch 1
+> (`1:0.3.1`, always newer for apt) and installs `/etc/apt/preferences.d/bifrost`,
+> which blocks Debian's package. If `dpkg-query -W bifrost` shows `1.3.1-1`, install
+> the release `.deb` again by hand as below.
+
 ## What the package contains
 
 | Path | Purpose |

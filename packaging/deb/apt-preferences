@@ -1,0 +1,7 @@
+# Installed by the bifrost home lab relay package (github.com/MichaelBMF/bifrost).
+# Debian ships an unrelated package that is also called "bifrost" with a higher
+# version; without this pin, apt or unattended-upgrades would replace this package
+# with it and remove /usr/bin/bifrost.
+Package: bifrost libbifrost0
+Pin: release o=Debian
+Pin-Priority: -1
