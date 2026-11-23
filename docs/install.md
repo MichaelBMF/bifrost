@@ -39,7 +39,7 @@ upgrade the package restarts the bifrost services that are running.
 ## Download and verify
 
 ```sh
-VERSION=v0.2.0
+VERSION=v0.3.1
 ARCH=$(dpkg --print-architecture)       # amd64 or arm64
 BASE=https://github.com/MichaelBMF/bifrost/releases/download/$VERSION
 cd "$(mktemp -d)"

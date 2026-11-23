@@ -1,6 +1,8 @@
-# Bifrost – home lab relay (prototype, v2)
+# Bifrost – home lab relay
 
-Prototype for the "Home Lab Relay: Architecture" design, variant **v2**:
+Remote access to a home lab without opening ports at home. One binary with three roles:
+**heimdall** (relay on a VPS), **asgard** (agent in the home lab) and **hlidskjalf**
+(web UI next to the agent). Design: the "Home Lab Relay: Architecture" document, variant v2.
 
 - **iPhone → VPS:** mTLS on TCP 443; the VPS checks an allowlist of public keys.
 - **Home lab ↔ VPS:** WireGuard, entirely in-process (wireguard-go with the gVisor netstack).
@@ -9,15 +11,18 @@ Prototype for the "Home Lab Relay: Architecture" design, variant **v2**:
 - **iPhone ↔ home lab:** end-to-end with Noise (`Noise_IK`, `Noise_IKpsk2` for pairing).
   The VPS only ever sees ciphertext.
 
-> Prototype: not audited, not meant for production.
+> Not independently audited. Shipped as signed `.deb` releases and in daily use on a
+> single home lab, but review it yourself before you rely on it.
 
 ## What's inside
 
 | Package | Contents |
 | --- | --- |
+| `cmd/bifrost` | The single binary: `heimdall`, `asgard`, `hlidskjalf`, `pair`/`devices`/`revoke`, `client`, `upgrade`, `version` |
 | `internal/relay` | TLS for devices, key allowlist, per-IP rate limit, one WireGuard peer per agent, control channel, one TCP connection through the tunnel per device connection |
 | `internal/agent` | In-process WireGuard with keepalive, control channel with backoff, Noise responder, per-device services, pairing, revocation, admin API |
 | `internal/mqttgw` | MQTT gateway: broker credentials stay with the agent, per-service topic allowlist |
+| `internal/update` | `bifrost upgrade`: fetch the latest release, verify the minisign signature, install with apt, health check, rollback |
 | `internal/web` | Hlidskjalf: web UI for devices and pairing (login, QR codes, revoke) |
 | `internal/wg` | In-process WireGuard tunnel (wireguard-go, netstack) |
 | `internal/client` | The app's tunnel core: pairing and local port forwarding |
@@ -36,6 +41,22 @@ how releases are made is in [docs/release.md](docs/release.md).
 `bifrost version` prints the installed version; `sudo bifrost upgrade` installs the
 latest signed release (optionally daily via `bifrost-upgrade.timer`).
 
+| Unit | Host | Purpose |
+| --- | --- | --- |
+| `bifrost-heimdall.service` | VPS | relay |
+| `bifrost-asgard.service` | home lab | agent |
+| `bifrost-hlidskjalf.service` | home lab | web UI |
+| `bifrost-check.timer` | home lab | optional end-to-end check every 5 minutes (see below) |
+| `bifrost-upgrade.timer` | both | optional daily self-update (04:00 plus up to one hour) |
+
+No unit is enabled on install. Configs live in `/etc/bifrost/*.json`; the package never
+writes or replaces them.
+
+Debian has an unrelated package that is also called `bifrost`. From v0.3.1 on, this
+package has epoch 1 (`1:0.3.1`) and installs an apt pin (`/etc/apt/preferences.d/bifrost`)
+so `unattended-upgrades` cannot replace it with Debian's. Details in
+[docs/install.md](docs/install.md).
+
 ## Build and test
 
 ```sh
@@ -51,11 +72,15 @@ closes active connections immediately.
 
 ## Setup
 
-1. Copy `heimdall.json` from `examples/` to the VPS and start `bifrost heimdall -config heimdall.json`.
-   The log shows the **relay pin** and the **relay WireGuard key**. Both go into `asgard.json`.
-2. Adjust `asgard.json` in the home lab and start `bifrost asgard -config asgard.json`.
-   The log shows the **agent WireGuard key**. It goes into `heimdall.json` under `agents.homelab.wg_pub`.
-   Restart the relay.
+Install the package on both hosts first ([docs/install.md](docs/install.md)); the example
+configs are in `/usr/share/doc/bifrost/examples/` (and in `examples/` here).
+
+1. On the VPS: copy `heimdall.json` to `/etc/bifrost/heimdall.json`, adjust it and run
+   `systemctl enable --now bifrost-heimdall`. The log (`journalctl -u bifrost-heimdall`) shows
+   the **relay pin** and the **relay WireGuard key**. Both go into `asgard.json`.
+2. In the home lab: copy `asgard.json` to `/etc/bifrost/asgard.json`, adjust it and run
+   `systemctl enable --now bifrost-asgard`. The log shows the **agent WireGuard key**. It goes
+   into `heimdall.json` under `agents.homelab.wg_pub`; then restart `bifrost-heimdall`.
 3. Open on the VPS: TCP 443 (devices) and UDP 51820 (WireGuard). At home: nothing.
 4. Pair a device: `bifrost pair -name iphone -services mqtt` shows a QR code and `bifrost1:…`
    (valid for 5 minutes, single use). Add `-user alice` to bind the code to an app user
@@ -66,6 +91,18 @@ closes active connections immediately.
 7. List and revoke devices: `bifrost devices`, `bifrost revoke -name iphone`.
 
 Bind the agent's admin API (`admin`) to `127.0.0.1` or the LAN only.
+
+Without the package, the same works by hand: `bifrost heimdall -config heimdall.json` and
+`bifrost asgard -config asgard.json`.
+
+### End-to-end check
+
+`bifrost-check` (with `bifrost-check.timer`, every 5 minutes) tests the whole path
+home lab → VPS → WireGuard → agent → MQTT broker: it opens a forward with a paired
+monitor device, publishes to the broker and reports the result to a push monitor
+(`PING_URL`, `/fail` appended on failure). Pair a device for the `bifrost-mon` user, then
+put `MQTT_PASS` and `PING_URL` into `/etc/bifrost-monitor.env` (mode 0600); the optional
+variables are listed at the top of `packaging/scripts/bifrost-check`.
 
 ## User and device name
 
