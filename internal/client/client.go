@@ -224,12 +224,48 @@ func (c *Client) PairContext(ctx context.Context, code string, opt PairOptions) 
 	return res, nil
 }
 
-// DialService opens an end-to-end encrypted connection to a service.
+// DialService opens an end-to-end encrypted byte stream to a service (stream mode).
 func (c *Client) DialService(name string) (net.Conn, error) {
 	return c.DialServiceContext(context.Background(), name)
 }
 
 func (c *Client) DialServiceContext(ctx context.Context, name string) (net.Conn, error) {
+	sc, err := c.open(ctx, name, "")
+	if err != nil {
+		return nil, err
+	}
+	return sc, nil
+}
+
+// Channel is an end-to-end encrypted channel to a service in message mode: every
+// Send arrives at the service as exactly one message, and Recv returns exactly one
+// message of the service. Send may be called from several goroutines; Recv from one.
+type Channel struct {
+	sc *wire.SecureConn
+}
+
+// OpenChannel opens a channel in message mode to service. It fails if the agent or
+// the service does not support message mode.
+func (c *Client) OpenChannel(ctx context.Context, service string) (*Channel, error) {
+	sc, err := c.open(ctx, service, wire.ModeMsg)
+	if err != nil {
+		return nil, err
+	}
+	return &Channel{sc: sc}, nil
+}
+
+// Send sends one message (at most wire.MaxMsg bytes).
+func (ch *Channel) Send(msg []byte) error { return ch.sc.WriteMsg(msg) }
+
+// Recv waits for the next message. It returns an error once the channel has ended.
+func (ch *Channel) Recv() ([]byte, error) { return ch.sc.ReadMsg() }
+
+// Close ends the channel.
+func (ch *Channel) Close() error { return ch.sc.Close() }
+
+// open dials the relay, runs the Noise handshake with the agent and opens service in
+// mode ("" is stream mode, as sent by clients before v0.4.0).
+func (c *Client) open(ctx context.Context, name, mode string) (*wire.SecureConn, error) {
 	c.mu.RLock()
 	id, st := c.id, c.state
 	c.mu.RUnlock()
@@ -245,7 +281,7 @@ func (c *Client) DialServiceContext(ctx context.Context, name string) (net.Conn,
 		return nil, err
 	}
 	stop := closeOnCancel(ctx, conn)
-	fail := func(err error) (net.Conn, error) {
+	fail := func(err error) (*wire.SecureConn, error) {
 		stop()
 		conn.Close()
 		if ctx.Err() != nil {
@@ -258,7 +294,7 @@ func (c *Client) DialServiceContext(ctx context.Context, name string) (net.Conn,
 		return fail(err)
 	}
 	_ = conn.SetDeadline(time.Now().Add(setupTimeout))
-	if err := sc.WriteJSON(map[string]string{"open": name}); err != nil {
+	if err := sc.WriteJSON(wire.Open{Open: name, Mode: mode}); err != nil {
 		return fail(err)
 	}
 	var s wire.Status
@@ -269,6 +305,10 @@ func (c *Client) DialServiceContext(ctx context.Context, name string) (net.Conn,
 			err = fmt.Errorf("service %q: rejected by agent (revoked or not allowed?): %w", name, err)
 		}
 		return fail(err)
+	}
+	if mode != "" && s.Mode != mode {
+		// An agent before v0.4.0 ignores the mode and would start a byte stream.
+		return fail(fmt.Errorf("service %q: the agent does not support %s mode (update bifrost in the home lab)", name, mode))
 	}
 	if !stop() { // ctx ended in the meantime and the connection is already closed
 		return fail(ctx.Err())

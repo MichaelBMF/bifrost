@@ -5,7 +5,7 @@ Wants=network-online.target
 After=network-online.target mosquitto.service
 
 [Service]
-# Secrets such as MQTT gateway passwords live root-only in /etc/credstore/bifrost-*;
+# Secrets such as MQTT service passwords live root-only in /etc/credstore/bifrost-*;
 # systemd hands them to the service in $CREDENTIALS_DIRECTORY (none is fine).
 ImportCredential=bifrost-*
 ExecStart=/usr/bin/bifrost asgard -config /etc/bifrost/asgard.json

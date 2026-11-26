@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/MichaelBMF/bifrost/internal/client"
+	"github.com/MichaelBMF/bifrost/internal/mqttc/mqtttest"
 	"github.com/MichaelBMF/bifrost/internal/mqttgw"
 )
 
@@ -54,12 +55,15 @@ func fakeMQTTBroker(t *testing.T) string {
 func gatewayConfig(t *testing.T) *mqttgw.Config {
 	pw := filepath.Join(t.TempDir(), "mqtt-pw")
 	os.WriteFile(pw, []byte("broker-secret\n"), 0o600)
-	gw := &mqttgw.Config{Broker: fakeMQTTBroker(t), Username: "midgard", PasswordFile: pw,
+	return &mqttgw.Config{Broker: fakeMQTTBroker(t), Username: "midgard", PasswordFile: pw,
 		Publish: []string{"midgard/+/command"}, Subscribe: []string{"midgard/#"}}
-	if err := gw.Load(); err != nil {
-		t.Fatal(err)
-	}
-	return gw
+}
+
+func midgardConfig(t *testing.T, b *mqtttest.Broker) *mqttgw.Config {
+	pw := filepath.Join(t.TempDir(), "mqtt-pw")
+	os.WriteFile(pw, []byte("broker-secret\n"), 0o600)
+	return &mqttgw.Config{Broker: b.Addr(), Username: "midgard", PasswordFile: pw,
+		Publish: []string{"midgard/+/command"}, Subscribe: []string{"midgard/#"}}
 }
 
 func mqttStr(s string) []byte { return append([]byte{0, byte(len(s))}, s...) }

@@ -82,6 +82,30 @@ type Control struct {
 type Status struct {
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
+	// Mode echoes the channel mode the agent accepted (since v0.4.0). An older agent
+	// leaves it empty, which a client asking for "msg" must treat as a refusal.
+	Mode string `json:"mode,omitempty"`
+}
+
+// Channel modes. The device names one in its Open request; the service decides
+// whether it supports it.
+const (
+	// ModeStream carries a byte stream: frame boundaries mean nothing (passthrough).
+	ModeStream = "stream"
+	// ModeMsg carries messages: each Noise transport message is one message of at
+	// most MaxMsg bytes, and its boundaries are kept end to end.
+	ModeMsg = "msg"
+)
+
+// MaxMsg is the largest message a channel in ModeMsg can carry.
+const MaxMsg = maxFrame - 16 // room for the Poly1305 tag
+
+// Open is the first message of a device on a dial connection, sent inside Noise.
+// It is the service marker: the agent picks the service by name and checks that the
+// device may use it. An empty Mode means ModeStream (all clients before v0.4.0).
+type Open struct {
+	Open string `json:"open"`
+	Mode string `json:"mode,omitempty"`
 }
 
 func TokenHash(token []byte) string {
@@ -126,7 +150,12 @@ type SecureConn struct {
 	wmu, rmu   sync.Mutex
 }
 
+// WriteMsg sends b as one Noise transport message (at most MaxMsg bytes). It is safe
+// to call from several goroutines.
 func (s *SecureConn) WriteMsg(b []byte) error {
+	if len(b) > MaxMsg {
+		return fmt.Errorf("message too large (%d bytes, at most %d)", len(b), MaxMsg)
+	}
 	s.wmu.Lock()
 	defer s.wmu.Unlock()
 	ct, err := s.send.Encrypt(nil, nil, b)
@@ -173,7 +202,7 @@ func (s *SecureConn) Read(p []byte) (int, error) {
 }
 
 func (s *SecureConn) Write(p []byte) (int, error) {
-	const chunk = maxFrame - 16 // room for the Poly1305 tag
+	const chunk = MaxMsg
 	n := 0
 	for len(p) > 0 {
 		c := p

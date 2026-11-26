@@ -27,6 +27,9 @@ func TestUnpairedClient(t *testing.T) {
 	if _, err := c.StartForward("mqtt", 0); err == nil {
 		t.Fatal("StartForward must fail before pairing")
 	}
+	if _, err := c.OpenChannel("mqtt", nopHandler{}); err == nil {
+		t.Fatal("OpenChannel must fail before pairing")
+	}
 	if err := c.Probe("mqtt"); err == nil {
 		t.Fatal("Probe must fail before pairing")
 	}
@@ -58,15 +61,22 @@ func TestUnpairedClient(t *testing.T) {
 	}
 }
 
-// The binding must stay small: no wireguard-go, no gVisor, no agent/relay code.
+// The binding must stay small and only be a transport: no wireguard-go, no gVisor,
+// no agent/relay code, no service (MQTT belongs to the app and the agent's service).
 func TestNoServerDependencies(t *testing.T) {
 	out, err := exec.Command("go", "list", "-deps", ".").CombinedOutput()
 	if err != nil {
 		t.Skipf("go list not available: %v %s", err, out)
 	}
-	for _, bad := range []string{"wireguard", "gvisor", "internal/agent", "internal/relay", "internal/wg", "qrterminal"} {
+	for _, bad := range []string{"wireguard", "gvisor", "internal/agent", "internal/relay", "internal/wg", "qrterminal",
+		"internal/services", "internal/mqttgw", "internal/mqttc"} {
 		if strings.Contains(string(out), bad) {
 			t.Errorf("mobile depends on %s", bad)
 		}
 	}
 }
+
+type nopHandler struct{}
+
+func (nopHandler) OnMessage([]byte) {}
+func (nopHandler) OnClose(string)   {}

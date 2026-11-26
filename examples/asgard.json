@@ -13,10 +13,9 @@
   "admin": "127.0.0.1:7070",
   "services": {
     "mqtt": "127.0.0.1:1883",
-    "ha": "192.168.10.20:8123"
-  },
-  "mqtt_gateways": {
+    "ha": {"type": "tcp", "target": "192.168.10.20:8123"},
     "midgard": {
+      "type": "mqtt",
       "broker": "127.0.0.1:1883",
       "username": "midgard",
       "password_file": "${CREDENTIALS_DIRECTORY}/bifrost-mqtt-midgard",

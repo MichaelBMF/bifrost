@@ -1,5 +1,7 @@
 // Package agent runs in the home lab, connects outbound to the relay, terminates Noise
-// and forwards connections only to services listed in its own config.
+// and hands each channel to a service listed in its own config. Services are
+// separate packages that register a type with package service; the agent does not
+// know what they do.
 package agent
 
 import (
@@ -22,7 +24,7 @@ import (
 	"time"
 
 	"github.com/MichaelBMF/bifrost/internal/keys"
-	"github.com/MichaelBMF/bifrost/internal/mqttgw"
+	"github.com/MichaelBMF/bifrost/internal/service"
 	"github.com/MichaelBMF/bifrost/internal/wg"
 	"github.com/MichaelBMF/bifrost/internal/wire"
 )
@@ -31,30 +33,81 @@ type Config struct {
 	Relay    string `json:"relay"`     // relay TLS address for iPhones, host:443 (goes into the QR code)
 	RelayPin string `json:"relay_pin"` // relay SPKI hash
 	// WireGuard to the relay (v2): runs in-process, no interface on the host.
-	RelayWGEndpoint string            `json:"relay_wg_endpoint"` // host:51820
-	RelayWGPub      string            `json:"relay_wg_pub"`      // base64
-	RelayTunnelIP   string            `json:"relay_tunnel_ip"`   // e.g. 10.8.0.1
-	ControlPort     int               `json:"control_port"`      // relay control channel, e.g. 7000
-	TunnelIP        string            `json:"tunnel_ip"`         // own tunnel address, e.g. 10.8.0.2
-	StreamPort      int               `json:"stream_port"`       // agent accepts connections here, e.g. 9000
-	AgentID         string            `json:"agent_id"`
-	KeyFile         string            `json:"key_file"`
-	StateFile       string            `json:"state_file"` // device list
-	Admin           string            `json:"admin"`      // LAN/localhost only, e.g. 127.0.0.1:7070
-	Services        map[string]string `json:"services"`   // name -> target host:port
-	// MQTTGateways are services where the agent speaks MQTT for the device: it logs in
-	// to the broker with its own credentials and checks every publish/subscribe
-	// against the gateway's topic allowlist. The device needs no broker password.
-	MQTTGateways map[string]*mqttgw.Config `json:"mqtt_gateways"`
+	RelayWGEndpoint string `json:"relay_wg_endpoint"` // host:51820
+	RelayWGPub      string `json:"relay_wg_pub"`      // base64
+	RelayTunnelIP   string `json:"relay_tunnel_ip"`   // e.g. 10.8.0.1
+	ControlPort     int    `json:"control_port"`      // relay control channel, e.g. 7000
+	TunnelIP        string `json:"tunnel_ip"`         // own tunnel address, e.g. 10.8.0.2
+	StreamPort      int    `json:"stream_port"`       // agent accepts connections here, e.g. 9000
+	AgentID         string `json:"agent_id"`
+	KeyFile         string `json:"key_file"`
+	StateFile       string `json:"state_file"` // device list
+	Admin           string `json:"admin"`      // LAN/localhost only, e.g. 127.0.0.1:7070
+	// Services maps a service name (the marker a device opens) to its config: an
+	// object with "type" (e.g. {"type":"mqtt",...} or {"type":"tcp","target":...}),
+	// or a plain "host:port" string, which is short for a tcp service.
+	Services map[string]json.RawMessage `json:"services"`
+	// MQTTGateways is the format before v0.4.0: each entry is an mqtt service.
+	MQTTGateways map[string]json.RawMessage `json:"mqtt_gateways"`
+
+	// Handlers are the services built from Services and MQTTGateways. Code that
+	// embeds the agent may also set them directly.
+	Handlers map[string]service.Service `json:"-"`
 }
 
-// hasService reports whether name is a configured service (plain or MQTT gateway).
+// hasService reports whether name is a configured service.
 func (c *Config) hasService(name string) bool {
-	if _, ok := c.Services[name]; ok {
-		return true
-	}
-	_, ok := c.MQTTGateways[name]
+	_, ok := c.Handlers[name]
 	return ok
+}
+
+// buildServices fills Handlers from Services and MQTTGateways.
+func (c *Config) buildServices() error {
+	if c.Handlers == nil {
+		c.Handlers = map[string]service.Service{}
+	}
+	add := func(name, typ string, raw json.RawMessage) error {
+		if _, dup := c.Handlers[name]; dup {
+			return fmt.Errorf("service %q is defined twice", name)
+		}
+		s, err := service.New(typ, raw)
+		if err != nil {
+			return fmt.Errorf("service %q: %w", name, err)
+		}
+		c.Handlers[name] = s
+		return nil
+	}
+	for name, raw := range c.Services {
+		var target string
+		if json.Unmarshal(raw, &target) == nil {
+			b, _ := json.Marshal(map[string]string{"type": "tcp", "target": target})
+			if err := add(name, "tcp", b); err != nil {
+				return err
+			}
+			continue
+		}
+		var head struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(raw, &head); err != nil {
+			return fmt.Errorf("service %q: %w", name, err)
+		}
+		if head.Type == "" {
+			return fmt.Errorf("service %q: type missing", name)
+		}
+		if err := add(name, head.Type, raw); err != nil {
+			return err
+		}
+	}
+	for name, raw := range c.MQTTGateways {
+		if string(raw) == "null" {
+			return fmt.Errorf("mqtt_gateways.%s is empty", name)
+		}
+		if err := add(name, "mqtt", raw); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type Device struct {
@@ -104,21 +157,18 @@ func LoadConfig(path string) (*Config, error) {
 	if err := json.Unmarshal(b, &c); err != nil {
 		return nil, err
 	}
-	for name, gw := range c.MQTTGateways {
-		if _, dup := c.Services[name]; dup {
-			return nil, fmt.Errorf("service %q is defined in services and mqtt_gateways", name)
-		}
-		if gw == nil {
-			return nil, fmt.Errorf("mqtt_gateways.%s is empty", name)
-		}
-		if err := gw.Load(); err != nil {
-			return nil, fmt.Errorf("mqtt_gateways.%s: %w", name, err)
-		}
+	if err := c.buildServices(); err != nil {
+		return nil, err
 	}
 	return &c, nil
 }
 
 func New(cfg *Config) (*Agent, error) {
+	if cfg.Handlers == nil {
+		if err := cfg.buildServices(); err != nil {
+			return nil, err
+		}
+	}
 	id, created, err := keys.LoadOrCreate(cfg.KeyFile)
 	if err != nil {
 		return nil, err
@@ -346,43 +396,47 @@ func (a *Agent) handleDial(st net.Conn, h wire.StreamHeader) error {
 	if err != nil {
 		return err
 	}
-	var req struct {
-		Open string `json:"open"`
-	}
+	var req wire.Open
 	if err := sc.ReadJSON(&req); err != nil {
 		return err
 	}
-	if !a.cfg.hasService(req.Open) || !slices.Contains(dev.Services, req.Open) {
+	mode := req.Mode
+	if mode == "" {
+		mode = wire.ModeStream
+	}
+	svc := a.cfg.Handlers[req.Open]
+	if svc == nil || !slices.Contains(dev.Services, req.Open) {
 		_ = sc.WriteJSON(wire.Status{Error: "service not allowed"})
 		return fmt.Errorf("%s: service %q not allowed", name, req.Open)
 	}
-	if gw := a.cfg.MQTTGateways[req.Open]; gw != nil {
-		if err := sc.WriteJSON(wire.Status{OK: true}); err != nil {
+	if !service.Supports(svc, mode) {
+		_ = sc.WriteJSON(wire.Status{Error: fmt.Sprintf("service does not support mode %q", mode)})
+		return fmt.Errorf("%s: service %q does not support mode %q", name, req.Open, mode)
+	}
+	accepted := false
+	accept := func() error {
+		if accepted {
+			return errors.New("accept called twice")
+		}
+		accepted = true
+		if err := sc.WriteJSON(wire.Status{OK: true, Mode: mode}); err != nil {
 			return err
 		}
-		log.Printf("%s -> %s (MQTT gateway to %s)", name, req.Open, gw.Broker)
+		log.Printf("%s -> %s (%s, %s)", name, req.Open, svc, mode)
 		a.track(name, sc, true)
-		err := gw.Serve(mqttgw.Peer{Device: name, User: dev.User, UserBound: dev.UserBound}, sc)
-		a.track(name, sc, false)
-		if err != nil {
-			log.Printf("%s: %s: %v", name, req.Open, err)
-		}
 		return nil
 	}
-	target := a.cfg.Services[req.Open]
-	up, err := net.DialTimeout("tcp", target, 5*time.Second)
-	if err != nil {
-		_ = sc.WriteJSON(wire.Status{Error: "service unreachable"})
-		return err
+	peer := service.Peer{Device: name, User: dev.User, UserBound: dev.UserBound}
+	err = svc.Serve(peer, mode, sc, accept)
+	if !accepted {
+		_ = sc.WriteJSON(wire.Status{Error: "service unavailable"})
+		sc.Close()
+		return fmt.Errorf("%s: %s: %v", name, req.Open, err)
 	}
-	if err := sc.WriteJSON(wire.Status{OK: true}); err != nil {
-		up.Close()
-		return err
-	}
-	log.Printf("%s -> %s (%s)", name, req.Open, target)
-	a.track(name, sc, true)
-	wire.Pipe(sc, up)
 	a.track(name, sc, false)
+	if err != nil {
+		log.Printf("%s: %s: %v", name, req.Open, err)
+	}
 	return nil
 }
 
