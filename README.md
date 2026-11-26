@@ -87,12 +87,18 @@ configs are in `/usr/share/doc/bifrost/examples/` (and in `examples/` here).
    (valid for 5 minutes, single use). Add `-user alice` to bind the code to an app user
    (see [User and device name](#user-and-device-name)).
 5. Pair the "app": `bifrost client pair -state phone -code bifrost1:… [-user alice] [-device-name "Alice's iPhone"]`.
-6. Open a tunnel: `bifrost client forward -state phone -L mqtt=127.0.0.1:11883`,
-   then e.g. `mosquitto_sub -h 127.0.0.1 -p 11883 -t 'home/#'`.
-   The local port accepts connections from **every process on that computer** and tunnels
-   them with the device's identity, so use `client forward` only for tests and admin work on
-   a machine you trust. Apps use the [mobile binding](#mobile-ios-binding), which opens no port.
-7. List and revoke devices: `bifrost devices`, `bifrost revoke -name iphone`.
+6. Use MQTT through the tunnel, without any local port:
+   `bifrost client mqtt sub -state phone -service mqtt -t 'home/#'` and
+   `bifrost client mqtt pub -state phone -service mqtt -t home/test -m hello [-q 1] [-r]`.
+   For a plain MQTT service pass `-username` and put the password into the environment
+   variable `BIFROST_MQTT_PASSWORD`; an [MQTT gateway](#mqtt-gateway) needs neither.
+   `sub` also takes `-C <count>` and `-W <seconds>` for scripts.
+7. For other tools, forward a service to a local TCP port:
+   `bifrost client forward -state phone -L ha=127.0.0.1:18123`. It prints a warning: the port
+   accepts connections from **every process on the computer**, which then reach the service
+   with this device's identity, so use it only for tests and admin work on a machine you
+   trust. Apps use the [mobile binding](#mobile-ios-binding), which opens no port.
+8. List and revoke devices: `bifrost devices`, `bifrost revoke -name iphone`.
 
 Bind the agent's admin API (`admin`) to `127.0.0.1` or the LAN only.
 
@@ -102,8 +108,8 @@ Without the package, the same works by hand: `bifrost heimdall -config heimdall.
 ### End-to-end check
 
 `bifrost-check` (with `bifrost-check.timer`, every 5 minutes) tests the whole path
-home lab → VPS → WireGuard → agent → MQTT broker: it opens a forward with a paired
-monitor device, publishes to the broker and reports the result to a push monitor
+home lab → VPS → WireGuard → agent → MQTT broker: it publishes to the broker with
+`bifrost client mqtt pub` as a paired monitor device (no local port) and reports the result to a push monitor
 (`PING_URL`, `/fail` appended on failure). Pair a device for the `bifrost-mon` user, then
 put `MQTT_PASS` and `PING_URL` into `/etc/bifrost-monitor.env` (mode 0600); the optional
 variables are listed at the top of `packaging/scripts/bifrost-check`.

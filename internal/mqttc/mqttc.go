@@ -27,7 +27,11 @@ type Message struct {
 
 // Options configure a session.
 type Options struct {
-	ClientID  string        // optional; the gateway prefixes it with the device name
+	ClientID string // optional; the gateway prefixes it with the device name
+	// Username and Password are only needed for a plain MQTT service; an MQTT gateway
+	// replaces them with its own.
+	Username  string
+	Password  string
 	KeepAlive time.Duration // default 30 s; 0 or less uses the default
 	// AckTimeout bounds the wait for CONNACK, PUBACK, SUBACK and UNSUBACK. Default 15 s.
 	AckTimeout time.Duration
@@ -54,6 +58,7 @@ type Session struct {
 	nextID  uint16
 	pending map[uint16]chan []byte // packet id -> ack body
 	err     error                  // set when the session ended
+	closing bool                   // Close was called
 	done    chan struct{}
 
 	qmu   sync.Mutex
@@ -77,9 +82,22 @@ func Connect(conn net.Conn, opts Options) (*Session, error) {
 	s.qcond = sync.NewCond(&s.qmu)
 
 	body := putStr(nil, "MQTT")
-	body = append(body, 4, 0x02) // level 3.1.1, clean session
+	flags := byte(0x02) // clean session
+	if opts.Username != "" {
+		flags |= 0x80
+		if opts.Password != "" {
+			flags |= 0x40
+		}
+	}
+	body = append(body, 4, flags) // level 3.1.1
 	body = binary.BigEndian.AppendUint16(body, uint16(opts.KeepAlive/time.Second))
 	body = putStr(body, opts.ClientID)
+	if opts.Username != "" {
+		body = putStr(body, opts.Username)
+		if opts.Password != "" {
+			body = putStr(body, opts.Password)
+		}
+	}
 	if _, err := conn.Write(encode(0x10, body)); err != nil {
 		conn.Close()
 		return nil, err
@@ -193,6 +211,9 @@ func (s *Session) Close() {
 		return
 	default:
 	}
+	s.mu.Lock()
+	s.closing = true
+	s.mu.Unlock()
 	s.wmu.Lock()
 	s.conn.SetWriteDeadline(time.Now().Add(time.Second))
 	s.conn.Write([]byte{0xe0, 0})
@@ -205,6 +226,9 @@ func (s *Session) end(err error) {
 	if s.err != nil {
 		s.mu.Unlock()
 		return
+	}
+	if s.closing {
+		err = ErrClosed // the broker closing after our DISCONNECT is not a failure
 	}
 	s.err = err
 	for id, ch := range s.pending {

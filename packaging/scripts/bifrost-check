@@ -9,20 +9,19 @@
 #   MQTT_TOPIC   optional, default "bifrost/monitor"
 #   STATE        optional, client state of the paired monitor device,
 #                default /var/lib/bifrost-monitor/mon
-#   PORT         optional, local forward port, default 11884
+#   SERVICE      optional, service of the monitor device, default "mqtt"
+#
+# MQTT runs inside the bifrost process; no local port is opened.
 set -u
 : "${MQTT_PASS:?MQTT_PASS is not set}"
 : "${PING_URL:?PING_URL is not set}"
 STATE="${STATE:-/var/lib/bifrost-monitor/mon}"
-PORT="${PORT:-11884}"
+SERVICE="${SERVICE:-mqtt}"
 MQTT_USER="${MQTT_USER:-monitor}"
 MQTT_TOPIC="${MQTT_TOPIC:-bifrost/monitor}"
 
-/usr/bin/bifrost client forward -state "$STATE" -L "mqtt=127.0.0.1:$PORT" >/dev/null 2>&1 &
-FWD=$!
-trap 'kill $FWD 2>/dev/null' EXIT
-sleep 2
-if timeout 15 mosquitto_pub -h 127.0.0.1 -p "$PORT" -u "$MQTT_USER" -P "$MQTT_PASS" \
+if BIFROST_MQTT_PASSWORD="$MQTT_PASS" timeout 30 /usr/bin/bifrost client mqtt pub \
+	-state "$STATE" -service "$SERVICE" -username "$MQTT_USER" \
 	-t "$MQTT_TOPIC" -m "$(date -Is)" -q 1; then
 	curl -fsS -m 10 --retry 3 "$PING_URL" >/dev/null
 	echo OK

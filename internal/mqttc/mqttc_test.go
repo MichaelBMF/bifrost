@@ -156,6 +156,15 @@ func TestKeepAlive(t *testing.T) {
 	}
 }
 
+func TestCredentials(t *testing.T) {
+	b := mqtttest.Start(t)
+	connect(t, b, mqttc.Options{Username: "monitor", Password: "secret"})
+	connect(t, b, mqttc.Options{})
+	if u := b.Users(); len(u) != 2 || u[0] != "monitor" || u[1] != "" {
+		t.Fatalf("broker users: %v", u)
+	}
+}
+
 func TestConnectRefused(t *testing.T) {
 	a, peer := net.Pipe()
 	go func() {

@@ -48,7 +48,7 @@ nfpms:
     section: net
     priority: optional
     bindir: /usr/bin
-    suggests: [mosquitto-clients, curl]
+    suggests: [curl]
     contents:
       - src: packaging/systemd/bifrost-heimdall.service
         dst: /usr/lib/systemd/system/bifrost-heimdall.service

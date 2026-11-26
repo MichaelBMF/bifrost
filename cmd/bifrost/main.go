@@ -9,6 +9,8 @@
 //	bifrost devices  -admin 127.0.0.1:7070
 //	bifrost client pair    -state phone -code bifrost1:... [-user alice] [-device-name "Alice's iPhone"]
 //	bifrost client forward -state phone -L mqtt=127.0.0.1:11883 [-L ha=127.0.0.1:18123]
+//	bifrost client mqtt pub -state phone -service midgard -t midgard/tg/command -m '{"action":"open"}'
+//	bifrost client mqtt sub -state phone -service midgard -t 'midgard/#'
 //	bifrost version
 //	bifrost upgrade [-check] [-to v0.2.0]       (install the latest signed release)
 package main
@@ -115,6 +117,10 @@ func main() {
 			usage()
 		}
 		sub := args[0]
+		if sub == "mqtt" {
+			clientMQTT(args[1:])
+			return
+		}
 		state := fs.String("state", "phone", "base name for keys and state")
 		code := fs.String("code", "", "pairing code (bifrost1:...)")
 		user := fs.String("user", "", "pair: app user name sent to the agent (optional)")
@@ -143,6 +149,7 @@ func main() {
 				if !ok {
 					log.Fatalf("invalid: %s", f)
 				}
+				log.Printf("warning: every process on this machine can use %s to reach %q as this device; for MQTT use `bifrost client mqtt`", addr, svc)
 				go func() { errc <- c.Forward(svc, addr) }()
 			}
 			check(<-errc)
@@ -161,6 +168,6 @@ func check(err error) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `bifrost heimdall|asgard|hlidskjalf|pair|revoke|devices|client pair|client forward|version|upgrade  (details: README.md)`)
+	fmt.Fprintln(os.Stderr, `bifrost heimdall|asgard|hlidskjalf|pair|revoke|devices|client pair|client forward|client mqtt pub|sub|version|upgrade  (details: README.md)`)
 	os.Exit(2)
 }
