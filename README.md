@@ -20,12 +20,16 @@ Remote access to a home lab without opening ports at home. One binary with three
 | --- | --- |
 | `cmd/bifrost` | The single binary: `heimdall`, `asgard`, `hlidskjalf`, `pair`/`devices`/`revoke`, `client`, `upgrade`, `version` |
 | `internal/relay` | TLS for devices, key allowlist, per-IP rate limit, one WireGuard peer per agent, control channel, one TCP connection through the tunnel per device connection |
-| `internal/agent` | In-process WireGuard with keepalive, control channel with backoff, Noise responder, per-device services, pairing, revocation, admin API |
-| `internal/mqttgw` | MQTT gateway: broker credentials stay with the agent, per-service topic allowlist |
+| `internal/agent` | In-process WireGuard with keepalive, control channel with backoff, Noise responder, per-device service rights, pairing, revocation, admin API |
+| `internal/service` | The boundary between transport and services: `Channel`, `Service`, type registry |
+| `internal/services/tcp` | Passthrough service: a channel becomes a TCP connection to a fixed target |
+| `internal/services/mqtt` | MQTT service: JSON messages from the device, MQTT to the broker, topic allowlist, sender identity |
+| `internal/mqttgw` | Stream mode of the MQTT service for apps before v0.4.0 (the device speaks MQTT itself) |
+| `internal/mqttc` | Small MQTT 3.1.1 client used by the MQTT service |
 | `internal/update` | `bifrost upgrade`: fetch the latest release, verify the minisign signature, install with apt, health check, rollback |
 | `internal/web` | Hlidskjalf: web UI for devices and pairing (login, QR codes, revoke) |
 | `internal/wg` | In-process WireGuard tunnel (wireguard-go, netstack) |
-| `internal/client` | The app's tunnel core: pairing and local port forwarding |
+| `internal/client` | The app's tunnel core: pairing, channels, local port forwarding (CLI) |
 | `mobile` | gomobile binding of the tunnel core for iOS (`Bifrost.xcframework`) |
 | `internal/wire` | Framing, Noise handshake, `SecureConn`, TLS pinning |
 | `internal/keys` | Ed25519 (TLS), X25519 (Noise and WireGuard), fingerprints |
@@ -135,30 +139,36 @@ Security:
 - Like the rest of the pairing confirmation, the labels travel inside Noise
   (`Noise_IKpsk2`); the relay never sees them.
 
-## MQTT gateway
+## Services
 
-A service can be an **MQTT gateway** instead of a plain TCP forward. The device then
-speaks MQTT through its tunnel **without any broker credentials**; the agent decides:
+bifrost itself is only the transport: relay, Noise, pairing and which device may open
+which service. Everything a message means belongs to a **service** in the agent and to the
+app on the other end. The core packages (`agent`, `client`, `relay`, `wire`, `mobile`)
+import no service; a test checks that. Service types register themselves with
+`internal/service`, and the binary imports them via `internal/services/all`.
 
-- It replaces the credentials in the device's CONNECT with its own (`username` and the
-  password from `password_file`) and prefixes the client ID with the device name, so the
-  broker log shows which device is connected.
-- Every PUBLISH must match a filter in `publish`, every SUBSCRIBE must lie within a filter
-  in `subscribe` (`+` and `#` allowed). Anything else ends the session before it reaches
-  the broker. A will message is kept only if its topic is allowed.
-- **Sender identity:** every published JSON object gets a field set by the agent from the
-  pairing, e.g. `"bifrost": {"device": "michael-iphone", "user": "michael", "user_bound": true}`.
-  A `bifrost` field sent by the device is overwritten, so the receiver can trust it. Other
-  payloads pass unchanged. Turn it off per gateway with `"identity": false`.
-- The agent log shows every publish with device, user and topic.
-- Only MQTT 3.1.1 is supported.
-
-The pairing is the only credential the device holds: revoking the device in bifrost ends
-its MQTT access immediately, and the broker password never leaves the home lab.
+Every connection from a device starts, inside Noise, with the service marker
 
 ```json
-"mqtt_gateways": {
+{"open": "midgard", "mode": "msg"}
+```
+
+The agent checks that the device was paired for `midgard`, that the service supports the
+mode, and answers `{"ok": true, "mode": "msg"}`. Two modes exist:
+
+| Mode | On the wire | Used for |
+| --- | --- | --- |
+| `stream` (default, all clients before v0.4.0) | A byte stream cut into Noise messages; boundaries mean nothing | Passthrough to a TCP target |
+| `msg` | Each Noise message is one message (at most 65 519 bytes); boundaries are kept | Message services such as MQTT |
+
+Services in `asgard.json`:
+
+```json
+"services": {
+  "ha":      {"type": "tcp", "target": "192.168.10.20:8123"},
+  "mqtt":    "127.0.0.1:1883",
   "midgard": {
+    "type": "mqtt",
     "broker": "127.0.0.1:1883",
     "username": "midgard",
     "password_file": "${CREDENTIALS_DIRECTORY}/bifrost-mqtt-midgard",
@@ -168,10 +178,57 @@ its MQTT access immediately, and the broker password never leaves the home lab.
 }
 ```
 
-Gateway names share the namespace with `services` and are paired the same way
-(`bifrost pair -name iphone -services midgard`). A plain `mqtt` service can stay next to
-the gateway for devices that log in to the broker themselves. Keep the password root-only and let systemd
-pass it in (the shipped unit has `ImportCredential=bifrost-*`):
+A plain `"host:port"` string is short for a `tcp` service. The section `mqtt_gateways`
+from earlier versions still works: each entry there is an `mqtt` service. Service names
+are what you pair: `bifrost pair -name iphone -services midgard,ha`.
+
+### tcp
+
+Stream mode only. Each channel becomes one TCP connection to `target`; bytes pass through
+unchanged. Use it for web UIs or for devices that speak a protocol themselves.
+
+### mqtt
+
+The agent logs in to the broker with its own credentials (`username` and the password from
+`password_file`); the device has no broker password and needs no MQTT library.
+
+- **Message mode** (apps from v0.4.0). One JSON object per message. Device to agent:
+
+  ```json
+  {"op":"sub",   "id":1, "filter":"midgard/#", "qos":1}
+  {"op":"unsub", "id":2, "filter":"midgard/#"}
+  {"op":"pub",   "id":3, "topic":"midgard/tg/command", "payload":{"action":"open"}, "qos":1, "retain":false}
+  {"op":"ping",  "id":4}
+  ```
+
+  A `pub` carries one of `payload` (any JSON value, sent as its JSON text), `payload_text`
+  (sent as is) or `payload_b64`. With an `id`, every op is answered with
+  `{"op":"ack","id":n}` or `{"op":"error","id":n,"error":"..."}`; a denied op does not end
+  the channel. Agent to device:
+
+  ```json
+  {"op":"msg", "topic":"midgard/tg/state", "payload":{"state":"open"}, "retain":true}
+  ```
+
+  with `payload` if the MQTT payload is JSON, else `payload_text` or `payload_b64`. If the
+  broker connection ends, the device gets `{"op":"error","error":"broker connection lost"}`
+  and the channel closes.
+- **Stream mode** (apps before v0.4.0): the device speaks MQTT 3.1.1 through the channel;
+  the agent replaces the credentials in CONNECT, prefixes the client ID with the device
+  name and ends the session on a denied PUBLISH or SUBSCRIBE. It will be removed once all
+  apps use message mode.
+
+In both modes every PUBLISH must match a filter in `publish` and every SUBSCRIBE must lie
+within a filter in `subscribe` (`+` and `#` allowed). **Sender identity:** every published
+JSON object gets a field set by the agent from the pairing, e.g.
+`"bifrost": {"device": "michael-iphone", "user": "michael", "user_bound": true}`. A
+`bifrost` field sent by the device is overwritten, so the receiver can trust it. Turn it off
+per service with `"identity": false`. The agent log shows every publish with device, user
+and topic.
+
+The pairing is the only credential the device holds: revoking the device in bifrost ends
+its MQTT access immediately, and the broker password never leaves the home lab. Keep the
+password root-only and let systemd pass it in (the shipped unit has `ImportCredential=bifrost-*`):
 
 ```sh
 install -d -m 700 /etc/credstore
@@ -180,6 +237,20 @@ systemctl restart bifrost-asgard
 ```
 
 `password_file` expands environment variables; outside systemd any readable path works.
+
+### From the command line
+
+`bifrost client channel` opens a channel in message mode and connects it to stdin and
+stdout, one message per line:
+
+```sh
+echo '{"op":"pub","id":1,"topic":"midgard/tg/command","payload":{"action":"open"}}' |
+  bifrost client channel -state phone -service midgard
+```
+
+`bifrost client forward` still forwards a local port to a stream service. Any process on
+the machine can use that port with the device's identity, so use it only on a machine you
+alone use.
 
 ## Mobile (iOS) binding
 
@@ -208,7 +279,11 @@ The Go API, with the generated Swift signatures:
 | `(*Client) IsPaired() bool` | `func isPaired() -> Bool` |
 | `(*Client) Info() string` | `func info() -> String` (JSON) |
 | `(*Client) Pair(code, user, deviceName string) (string, error)` | `func pair(_ code: String?, user: String?, deviceName: String?, error: NSErrorPointer) -> String` (JSON) |
-| `(*Client) StartForward(service string, port int) (int, error)` | `func startForward(_ service: String?, port: Int, ret0_: UnsafeMutablePointer<Int>?) throws` |
+| `(*Client) OpenChannel(service string, h MessageHandler) (*Channel, error)` | `func openChannel(_ service: String?, h: MobileMessageHandlerProtocol?) throws -> MobileChannel` |
+| `(*Channel) Send(msg []byte) error` | `func send(_ msg: Data?) throws` |
+| `(*Channel) Close()` / `IsOpen() bool` | `func close()` / `func isOpen() -> Bool` |
+| `MessageHandler.OnMessage(msg []byte)` / `OnClose(err string)` | `func onMessage(_ msg: Data?)` / `func onClose(_ err: String?)` |
+| `(*Client) StartForward(service string, port int) (int, error)` (deprecated) | `func startForward(_ service: String?, port: Int, ret0_: UnsafeMutablePointer<Int>?) throws` |
 | `(*Client) ForwardPort(service string) int` | `func forwardPort(_ service: String?) -> Int` |
 | `(*Client) StopForward(service string)` | `func stopForward(_ service: String?)` |
 | `(*Client) StopAll()` | `func stopAll()` |
@@ -230,10 +305,17 @@ if !tunnel.isPaired() {
     print(result)   // {"name":"iphone","services":["mqtt"],"user":"alice",...}
 }
 
-var port = 0
-try tunnel.startForward("mqtt", port: 0, ret0_: &port)   // 0 = pick a free port
-// connect the MQTT client to 127.0.0.1:port
+final class Handler: NSObject, MobileMessageHandlerProtocol {
+    func onMessage(_ msg: Data?) { /* one message of the service, e.g. JSON */ }
+    func onClose(_ err: String?) { /* "" after close(), else why it ended */ }
+}
+
+let channel = try tunnel.openChannel("midgard", h: Handler())
+try channel.send(Data(#"{"op":"sub","id":1,"filter":"midgard/#","qos":1}"#.utf8))
 ```
+
+On Android the same API comes from the AAR (`mobile.Mobile.newClient`, `client.openChannel`,
+a class implementing `mobile.MessageHandler`).
 
 Notes for the app:
 
@@ -242,9 +324,12 @@ Notes for the app:
 - `Info()` returns `{"paired", "relay", "agent_id", "services", "name", "user", "device_name",
   "device_fp", "agent_fp", "paired_at", "forwards": {"mqtt": 54321}}`. `device_fp` exists
   before pairing, so it can be shown for comparison with the agent log.
-- Every connection to the local port opens its own end-to-end tunnel. iOS suspends the app
-  in the background; call `stopAll()` there and `startForward` again when it becomes active
-  (with `port: 0` this may return a different port).
+- A channel opens no port: its messages stay inside the app's process, so no other app
+  on the device can use the tunnel. Each channel is its own end-to-end connection. iOS
+  suspends the app in the background; call `stopAll()` there (it closes channels and
+  forwards) and open the channel again when the app becomes active.
+- `StartForward` opens a port on 127.0.0.1 that any app on the device could use. It is
+  kept for apps before v0.4.0 and will be removed.
 - `Probe("mqtt")` checks the whole path (relay, pin, device allowed, Noise, service reachable)
   with a 20 s timeout.
 - `Unpair()` deletes the pairing state and replaces the keys, but does not notify the agent;
@@ -288,7 +373,8 @@ journalctl -u bifrost-hlidskjalf | grep SHA-256   # certificate fingerprint
 3. VPS → agent: a new TCP connection to `10.8.0.2:9000` inside the tunnel, `StreamHeader{kind, relay_id}`,
    after that bytes are just passed through.
 4. iPhone ↔ agent: Noise_IK. The agent checks that the Noise key and the relay key belong
-   to the same device, then `{"open":"mqtt"}`; the target comes only from `asgard.json`.
+   to the same device, then reads the service marker `{"open":"midgard","mode":"msg"}` and
+   hands the channel to that service; what a service may reach comes only from `asgard.json`.
 5. Pairing: `Noise_IKpsk2` with the token from the QR code as PSK. The device is stored only after
    the app's first encrypted message `{"relay_id", "user"?, "device_name"?}`.
 

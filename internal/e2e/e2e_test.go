@@ -19,8 +19,11 @@ import (
 	"github.com/MichaelBMF/bifrost/internal/agent"
 	"github.com/MichaelBMF/bifrost/internal/client"
 	"github.com/MichaelBMF/bifrost/internal/keys"
-	"github.com/MichaelBMF/bifrost/internal/mqttgw"
+	"github.com/MichaelBMF/bifrost/internal/mqttc/mqtttest"
 	"github.com/MichaelBMF/bifrost/internal/relay"
+	"github.com/MichaelBMF/bifrost/internal/service"
+	"github.com/MichaelBMF/bifrost/internal/services/mqtt"
+	"github.com/MichaelBMF/bifrost/internal/services/tcp"
 	"github.com/MichaelBMF/bifrost/internal/wire"
 )
 
@@ -56,6 +59,14 @@ type env struct {
 	agent    *agent.Agent
 	relayPin string
 	dir      string
+	broker   *mqtttest.Broker
+}
+
+func mustService(s service.Service, err error) service.Service {
+	if err != nil {
+		panic(err)
+	}
+	return s
 }
 
 func freeUDPPort(t *testing.T) int {
@@ -78,17 +89,22 @@ func setup(t *testing.T) *env {
 		Agents: map[string]relay.AgentConfig{"homelab": {WGPub: aid.WGPublic(), TunnelIP: "10.8.0.2", StreamPort: 9000}}})
 	go func() { t.Log(r.Run()) }()
 	<-r.Ready()
+	broker := mqtttest.Start(t)
 	a, err := agent.New(&agent.Config{Relay: relayAddr, RelayPin: rid.TLSID(), AgentID: "homelab",
 		RelayWGEndpoint: fmt.Sprintf("127.0.0.1:%d", wgPort), RelayWGPub: rid.WGPublic(),
 		RelayTunnelIP: "10.8.0.1", ControlPort: 7000, TunnelIP: "10.8.0.2", StreamPort: 9000,
 		KeyFile: filepath.Join(dir, "agent.key"), StateFile: filepath.Join(dir, "devices.json"),
-		Services:     map[string]string{"mqtt": echoServer(t), "ha": echoServer(t)},
-		MQTTGateways: map[string]*mqttgw.Config{"mqttgw": gatewayConfig(t)}})
+		Handlers: map[string]service.Service{
+			"mqtt":    mustService(tcp.New(echoServer(t))),
+			"ha":      mustService(tcp.New(echoServer(t))),
+			"mqttgw":  mustService(mqtt.New(gatewayConfig(t))),
+			"midgard": mustService(mqtt.New(midgardConfig(t, broker))),
+		}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	go a.Run()
-	return &env{relay: r, agent: a, relayPin: rid.TLSID(), dir: dir}
+	return &env{relay: r, agent: a, relayPin: rid.TLSID(), dir: dir, broker: broker}
 }
 
 func (e *env) pairCode(t *testing.T, name string, svcs ...string) string {

@@ -9,6 +9,7 @@
 //	bifrost devices  -admin 127.0.0.1:7070
 //	bifrost client pair    -state phone -code bifrost1:... [-user alice] [-device-name "Alice's iPhone"]
 //	bifrost client forward -state phone -L mqtt=127.0.0.1:11883 [-L ha=127.0.0.1:18123]
+//	bifrost client channel -state phone -service midgard   (messages on stdin/stdout, one per line)
 //	bifrost version
 //	bifrost upgrade [-check] [-to v0.2.0]       (install the latest signed release)
 package main
@@ -23,10 +24,12 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/MichaelBMF/bifrost/internal/agent"
 	"github.com/MichaelBMF/bifrost/internal/client"
 	"github.com/MichaelBMF/bifrost/internal/relay"
+	_ "github.com/MichaelBMF/bifrost/internal/services/all"
 	"github.com/MichaelBMF/bifrost/internal/web"
 	"github.com/mdp/qrterminal/v3"
 )
@@ -119,6 +122,8 @@ func main() {
 		code := fs.String("code", "", "pairing code (bifrost1:...)")
 		user := fs.String("user", "", "pair: app user name sent to the agent (optional)")
 		devName := fs.String("device-name", "", "pair: device name sent to the agent (optional)")
+		service := fs.String("service", "", "channel: service to open")
+		linger := fs.Duration("linger", 2*time.Second, "channel: keep receiving this long after stdin ends")
 		var fwd multi
 		fs.Var(&fwd, "L", "service=address, repeatable")
 		fs.Parse(args[1:])
@@ -146,6 +151,8 @@ func main() {
 				go func() { errc <- c.Forward(svc, addr) }()
 			}
 			check(<-errc)
+		case "channel":
+			check(clientChannel(c, *service, *linger))
 		default:
 			usage()
 		}
@@ -161,6 +168,6 @@ func check(err error) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `bifrost heimdall|asgard|hlidskjalf|pair|revoke|devices|client pair|client forward|version|upgrade  (details: README.md)`)
+	fmt.Fprintln(os.Stderr, `bifrost heimdall|asgard|hlidskjalf|pair|revoke|devices|client pair|client forward|client channel|version|upgrade  (details: README.md)`)
 	os.Exit(2)
 }

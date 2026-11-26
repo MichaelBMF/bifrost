@@ -1,4 +1,6 @@
-// Package mqttgw is an MQTT 3.1.1 gateway for paired devices.
+// Package mqttgw is an MQTT 3.1.1 gateway for paired devices. It is the stream mode of
+// the mqtt service (internal/services/mqtt), kept for apps that still speak MQTT
+// through the tunnel; new apps use the message mode.
 //
 // The device speaks MQTT through its bifrost tunnel without any broker credentials.
 // The agent opens its own connection to the broker, replaces the credentials in the
@@ -440,4 +442,26 @@ func coveredByAny(allowed []string, sub string) bool {
 		}
 	}
 	return false
+}
+
+// MARK: used by the message mode of the mqtt service
+
+// MayPublish reports whether a device may publish to topic.
+func (c *Config) MayPublish(topic string) bool { return matchAny(c.Publish, topic) }
+
+// MaySubscribe reports whether a device may subscribe to filter.
+func (c *Config) MaySubscribe(filter string) bool { return coveredByAny(c.Subscribe, filter) }
+
+// AddsIdentity reports whether published JSON objects get the "bifrost" field.
+func (c *Config) AddsIdentity() bool { return c.identity() }
+
+// Password returns the broker password read by Load.
+func (c *Config) Password() string { return c.password }
+
+// Stamp sets payload["bifrost"] = peer if payload is a JSON object.
+func Stamp(payload []byte, peer Peer) ([]byte, bool) { return stamp(payload, peer) }
+
+// ValidTopic reports whether topic is a valid topic name to publish to.
+func ValidTopic(topic string) bool {
+	return topic != "" && !strings.ContainsAny(topic, "+#") && !strings.HasPrefix(topic, "$")
 }
