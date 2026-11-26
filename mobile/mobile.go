@@ -9,9 +9,15 @@
 //
 //	c := NewClient(<Application Support>/bifrost)
 //	if !c.IsPaired() { c.Pair(code, user, deviceName) }
-//	port := c.StartForward("mqtt", 0)   // MQTT client connects to 127.0.0.1:port
+//	s := c.ConnectMQTT("midgard", "app", 30, handler)
+//	s.Subscribe("midgard/#", 1)
+//	s.Publish("midgard/tg/command", payload, 1, false)
 //	...
 //	c.StopAll()                          // when the app goes to the background
+//
+// The binding deliberately opens no local listener: a port on 127.0.0.1 could be used
+// by any other app or process on the device to reach the home lab with this device's
+// identity. Local port forwarding exists only in the CLI (bifrost client forward).
 //
 // This package must not import internal/agent, internal/relay or internal/wg
 // (wireguard-go, gVisor); see TestNoServerDependencies.
@@ -22,15 +28,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"sync"
 	"time"
 
 	"github.com/MichaelBMF/bifrost/internal/client"
+	"github.com/MichaelBMF/bifrost/internal/mqttc"
 )
 
 // ProbeTimeout bounds Probe (relay connection, handshake and service open), in seconds.
@@ -42,8 +47,8 @@ type Client struct {
 	c   *client.Client
 	dir string
 
-	mu  sync.Mutex
-	fwd map[string]*client.Forwarder // service -> active forwarder
+	mu       sync.Mutex
+	sessions map[*MQTTSession]bool
 }
 
 // NewClient opens (or creates) the device keys and pairing state in stateDir, e.g. a
@@ -60,32 +65,30 @@ func NewClient(stateDir string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{c: c, dir: stateDir, fwd: map[string]*client.Forwarder{}}, nil
+	return &Client{c: c, dir: stateDir, sessions: map[*MQTTSession]bool{}}, nil
 }
 
 // IsPaired reports whether this device has been paired with an agent.
 func (m *Client) IsPaired() bool { return m.c.Paired() }
 
 type info struct {
-	Paired     bool           `json:"paired"`
-	Relay      string         `json:"relay,omitempty"`
-	AgentID    string         `json:"agent_id,omitempty"`
-	Services   []string       `json:"services"`
-	Name       string         `json:"name,omitempty"`
-	User       string         `json:"user,omitempty"`
-	DeviceName string         `json:"device_name,omitempty"`
-	DeviceFP   string         `json:"device_fp"`
-	AgentFP    string         `json:"agent_fp,omitempty"`
-	PairedAt   string         `json:"paired_at,omitempty"`
-	Forwards   map[string]int `json:"forwards"`
+	Paired     bool     `json:"paired"`
+	Relay      string   `json:"relay,omitempty"`
+	AgentID    string   `json:"agent_id,omitempty"`
+	Services   []string `json:"services"`
+	Name       string   `json:"name,omitempty"`
+	User       string   `json:"user,omitempty"`
+	DeviceName string   `json:"device_name,omitempty"`
+	DeviceFP   string   `json:"device_fp"`
+	AgentFP    string   `json:"agent_fp,omitempty"`
+	PairedAt   string   `json:"paired_at,omitempty"`
 }
 
 // Info returns the pairing state as JSON:
 //
 //	{"paired":true,"relay":"vps.example.org:443","agent_id":"homelab","services":["mqtt"],
 //	 "name":"iphone","user":"alice","device_name":"Alice's iPhone",
-//	 "device_fp":"ABCD-EFGH-IJKL-MNOP","agent_fp":"...","paired_at":"2026-11-21T12:00:00Z",
-//	 "forwards":{"mqtt":54321}}
+//	 "device_fp":"ABCD-EFGH-IJKL-MNOP","agent_fp":"...","paired_at":"2026-11-21T12:00:00Z"}
 //
 // "name" is the name the admin gave the device with `bifrost pair -name`.
 // "device_fp" is always set (the key exists before pairing), so it can be shown
@@ -94,7 +97,7 @@ func (m *Client) Info() string {
 	st := m.c.State()
 	in := info{Paired: st.AgentID != "", Relay: st.Relay, AgentID: st.AgentID, Services: st.Services,
 		Name: st.Name, User: st.User, DeviceName: st.DeviceName, DeviceFP: m.c.DeviceFingerprint(),
-		AgentFP: st.AgentFP, PairedAt: st.Paired, Forwards: m.forwards()}
+		AgentFP: st.AgentFP, PairedAt: st.Paired}
 	if in.Services == nil {
 		in.Services = []string{}
 	}
@@ -122,80 +125,124 @@ func (m *Client) Pair(code, user, deviceName string) (string, error) {
 	return string(b), nil
 }
 
-// StartForward listens on 127.0.0.1:port (port 0 picks a free port) and tunnels
-// every connection to service. It returns the bound port. If service is already
-// forwarded, the existing port is returned when port is 0 or equal to it;
-// otherwise the old forward is stopped first.
-func (m *Client) StartForward(service string, port int) (int, error) {
+// MessageHandler receives the messages and the end of an MQTTSession. In Swift it is
+// the protocol MobileMessageHandlerProtocol. Calls come one at a time, in order, on a
+// background thread; dispatch to the main thread for UI work.
+type MessageHandler interface {
+	// OnMessage is called for every message the broker delivers for a subscription.
+	OnMessage(topic string, payload []byte, retained bool)
+	// OnClose is called once when the session ends. reason is empty after Close or
+	// StopAll, otherwise it says why the connection was lost; the app should then
+	// connect again and repeat its subscriptions.
+	OnClose(reason string)
+}
+
+// MQTTSession is an MQTT 3.1.1 session through the tunnel to an MQTT gateway of the
+// agent. It runs entirely inside the app: no local port is opened, so other apps and
+// processes on the device cannot use the tunnel.
+type MQTTSession struct {
+	m *Client
+	s *mqttc.Session
+}
+
+// ConnectMQTT opens a tunnel to service (an MQTT gateway in the agent's config,
+// e.g. "midgard") and starts an MQTT session over it. clientID is optional; the
+// gateway prefixes it with the device name and adds the broker credentials, so the
+// app needs none. keepAlive is in seconds (0 = 30). handler may be nil if the app
+// only publishes.
+func (m *Client) ConnectMQTT(service, clientID string, keepAlive int, handler MessageHandler) (*MQTTSession, error) {
 	st := m.c.State()
 	if st.AgentID == "" {
-		return 0, errors.New("not paired yet")
+		return nil, errors.New("not paired yet")
 	}
 	if !slices.Contains(st.Services, service) {
-		return 0, fmt.Errorf("service %q is not allowed for this device (allowed: %v)", service, st.Services)
+		return nil, fmt.Errorf("service %q is not allowed for this device (allowed: %v)", service, st.Services)
 	}
-	if port < 0 || port > 65535 {
-		return 0, fmt.Errorf("invalid port %d", port)
+	if keepAlive < 0 || keepAlive > 65535 {
+		return nil, fmt.Errorf("invalid keepAlive %d", keepAlive)
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if f := m.fwd[service]; f != nil {
-		select {
-		case <-f.Done(): // listener died
-		default:
-			if cur := f.Addr().(*net.TCPAddr).Port; port == 0 || port == cur {
-				return cur, nil
-			}
-		}
-		f.Close()
-		delete(m.fwd, service)
-	}
-	f, err := m.c.Listen(service, net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	ctx, cancel := context.WithTimeout(context.Background(), ProbeTimeout*time.Second)
+	defer cancel()
+	conn, err := m.c.DialServiceContext(ctx, service)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	m.fwd[service] = f
-	return f.Addr().(*net.TCPAddr).Port, nil
-}
-
-// ForwardPort returns the local port of an active forward for service, or 0.
-func (m *Client) ForwardPort(service string) int {
-	return m.forwards()[service]
-}
-
-func (m *Client) forwards() map[string]int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := map[string]int{}
-	for s, f := range m.fwd {
-		select {
-		case <-f.Done():
-		default:
-			out[s] = f.Addr().(*net.TCPAddr).Port
-		}
+	sess := &MQTTSession{m: m}
+	opts := mqttc.Options{
+		ClientID:  clientID,
+		KeepAlive: time.Duration(keepAlive) * time.Second,
+		OnClose: func(err error) {
+			m.forget(sess)
+			if handler != nil {
+				reason := ""
+				if err != nil {
+					reason = err.Error()
+				}
+				handler.OnClose(reason)
+			}
+		},
 	}
-	return out
-}
-
-// StopForward closes the listener for service and all its tunneled connections.
-func (m *Client) StopForward(service string) {
+	if handler != nil {
+		opts.OnMessage = func(msg mqttc.Message) { handler.OnMessage(msg.Topic, msg.Payload, msg.Retained) }
+	}
+	s, err := mqttc.Connect(conn, opts)
+	if err != nil {
+		return nil, err
+	}
+	sess.s = s
 	m.mu.Lock()
-	f := m.fwd[service]
-	delete(m.fwd, service)
+	m.sessions[sess] = true
 	m.mu.Unlock()
-	if f != nil {
-		f.Close()
+	return sess, nil
+}
+
+func (m *Client) forget(s *MQTTSession) {
+	m.mu.Lock()
+	delete(m.sessions, s)
+	m.mu.Unlock()
+}
+
+// Publish sends payload to topic. qos is 0 or 1; with 1 it returns after the broker
+// confirmed the message. A gateway ends the session on topics outside its allowlist.
+func (s *MQTTSession) Publish(topic string, payload []byte, qos int, retain bool) error {
+	return s.s.Publish(topic, payload, qos, retain)
+}
+
+// Subscribe subscribes to a topic filter ("+" and "#" allowed) with QoS 0 or 1 and
+// returns after the broker confirmed it. A gateway ends the session on filters
+// outside its allowlist.
+func (s *MQTTSession) Subscribe(filter string, qos int) error {
+	return s.s.Subscribe(filter, qos)
+}
+
+// Unsubscribe removes a subscription.
+func (s *MQTTSession) Unsubscribe(filter string) error {
+	return s.s.Unsubscribe(filter)
+}
+
+// IsConnected reports whether the session is still running.
+func (s *MQTTSession) IsConnected() bool {
+	select {
+	case <-s.s.Done():
+		return false
+	default:
+		return true
 	}
 }
 
-// StopAll stops every forward.
+// Close ends the session and its tunnel. The handler gets OnClose("").
+func (s *MQTTSession) Close() {
+	s.s.Close()
+}
+
+// StopAll closes every MQTT session, e.g. when the app goes to the background.
 func (m *Client) StopAll() {
 	m.mu.Lock()
-	fs := m.fwd
-	m.fwd = map[string]*client.Forwarder{}
+	all := m.sessions
+	m.sessions = map[*MQTTSession]bool{}
 	m.mu.Unlock()
-	for _, f := range fs {
-		f.Close()
+	for s := range all {
+		s.s.Close()
 	}
 }
 
@@ -212,7 +259,7 @@ func (m *Client) Probe(service string) error {
 	return c.Close()
 }
 
-// Unpair stops all forwards, deletes the pairing state and replaces the device
+// Unpair closes all sessions, deletes the pairing state and replaces the device
 // keys. The agent is not notified: the admin should also run `bifrost revoke`.
 func (m *Client) Unpair() error {
 	m.StopAll()

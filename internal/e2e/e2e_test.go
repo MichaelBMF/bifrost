@@ -19,6 +19,7 @@ import (
 	"github.com/MichaelBMF/bifrost/internal/agent"
 	"github.com/MichaelBMF/bifrost/internal/client"
 	"github.com/MichaelBMF/bifrost/internal/keys"
+	"github.com/MichaelBMF/bifrost/internal/mqttc/mqtttest"
 	"github.com/MichaelBMF/bifrost/internal/mqttgw"
 	"github.com/MichaelBMF/bifrost/internal/relay"
 	"github.com/MichaelBMF/bifrost/internal/wire"
@@ -56,6 +57,7 @@ type env struct {
 	agent    *agent.Agent
 	relayPin string
 	dir      string
+	broker   *mqtttest.Broker // behind the "midgard" MQTT gateway
 }
 
 func freeUDPPort(t *testing.T) int {
@@ -71,6 +73,12 @@ func setup(t *testing.T) *env {
 	dir := t.TempDir()
 	relayAddr := freePort(t)
 	wgPort := freeUDPPort(t)
+	broker := mqtttest.Start(t)
+	midgard := &mqttgw.Config{Broker: broker.Addr(), Username: "midgard",
+		Publish: []string{"midgard/+/command"}, Subscribe: []string{"midgard/#"}}
+	if err := midgard.Load(); err != nil {
+		t.Fatal(err)
+	}
 	rid, _, _ := keys.LoadOrCreate(filepath.Join(dir, "relay.key"))
 	aid, _, _ := keys.LoadOrCreate(filepath.Join(dir, "agent.key"))
 	r := relay.New(&relay.Config{Listen: relayAddr, KeyFile: filepath.Join(dir, "relay.key"),
@@ -83,12 +91,12 @@ func setup(t *testing.T) *env {
 		RelayTunnelIP: "10.8.0.1", ControlPort: 7000, TunnelIP: "10.8.0.2", StreamPort: 9000,
 		KeyFile: filepath.Join(dir, "agent.key"), StateFile: filepath.Join(dir, "devices.json"),
 		Services:     map[string]string{"mqtt": echoServer(t), "ha": echoServer(t)},
-		MQTTGateways: map[string]*mqttgw.Config{"mqttgw": gatewayConfig(t)}})
+		MQTTGateways: map[string]*mqttgw.Config{"mqttgw": gatewayConfig(t), "midgard": midgard}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	go a.Run()
-	return &env{relay: r, agent: a, relayPin: rid.TLSID(), dir: dir}
+	return &env{relay: r, agent: a, relayPin: rid.TLSID(), dir: dir, broker: broker}
 }
 
 func (e *env) pairCode(t *testing.T, name string, svcs ...string) string {

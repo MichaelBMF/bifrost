@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,7 +53,7 @@ func TestMobileBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	code := e.pairCode(t, "iphone", "mqtt")
+	code := e.pairCode(t, "iphone", "mqtt", "midgard")
 	out, err := app.Pair(code, "alice", "Alice's iPhone\n")
 	if err != nil {
 		t.Fatalf("pairing: %v", err)
@@ -63,7 +62,7 @@ func TestMobileBinding(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &res); err != nil {
 		t.Fatal(err)
 	}
-	if res.Name != "iphone" || res.User != "alice" || res.DeviceName != "Alice's iPhone" || len(res.Services) != 1 {
+	if res.Name != "iphone" || res.User != "alice" || res.DeviceName != "Alice's iPhone" || len(res.Services) != 2 {
 		t.Fatalf("unexpected pair result: %s", out)
 	}
 	d := e.devices(t)["iphone"]
@@ -84,50 +83,8 @@ func TestMobileBinding(t *testing.T) {
 	if err := app.Probe("ha"); err == nil {
 		t.Fatal("probe of a service that is not allowed must fail")
 	}
-	if _, err := app.StartForward("ha", 0); err == nil {
-		t.Fatal("forwarding a service that is not allowed must fail")
-	}
-
-	port, err := app.StartForward("mqtt", 0)
-	if err != nil || port == 0 {
-		t.Fatalf("StartForward: %d %v", port, err)
-	}
-	if p2, _ := app.StartForward("mqtt", 0); p2 != port {
-		t.Fatalf("StartForward again returned %d, want %d", p2, port)
-	}
-	if app.ForwardPort("mqtt") != port {
-		t.Fatal("ForwardPort mismatch")
-	}
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	c, err := net.Dial("tcp", addr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := roundTrip(c, 100_000); err != nil {
-		t.Fatal(err)
-	}
-
-	// StopForward closes the listener and the active connection.
-	app.StopForward("mqtt")
-	if err := roundTrip(c, 100); err == nil {
-		t.Fatal("connection survived StopForward")
-	}
-	c.Close()
-	if c, err := net.DialTimeout("tcp", addr, time.Second); err == nil {
-		c.Close()
-		t.Fatal("listener survived StopForward")
-	}
-	if app.ForwardPort("mqtt") != 0 {
-		t.Fatal("ForwardPort after StopForward")
-	}
-
-	// A fixed port, then StopAll.
-	fixed := freePort(t)
-	_, ps, _ := net.SplitHostPort(fixed)
-	var want int
-	fmt.Sscan(ps, &want)
-	if got, err := app.StartForward("mqtt", want); err != nil || got != want {
-		t.Fatalf("StartForward fixed port: %d %v", got, err)
+	if _, err := app.ConnectMQTT("ha", "app", 0, nil); err == nil {
+		t.Fatal("MQTT to a service that is not allowed must fail")
 	}
 	app.StopAll()
 
@@ -221,5 +178,113 @@ func TestLegacyPairRequest(t *testing.T) {
 	}
 	if d := e.devices(t)["legacy"]; d.User != "" || d.DeviceName != "" || d.RelayID != id.TLSID() {
 		t.Fatalf("unexpected device %+v", d)
+	}
+}
+
+type handler struct {
+	msgs   chan [3]string // topic, payload, retained
+	closed chan string
+}
+
+func newHandler() *handler {
+	return &handler{msgs: make(chan [3]string, 16), closed: make(chan string, 1)}
+}
+
+func (h *handler) OnMessage(topic string, payload []byte, retained bool) {
+	h.msgs <- [3]string{topic, string(payload), fmt.Sprint(retained)}
+}
+
+func (h *handler) OnClose(reason string) { h.closed <- reason }
+
+func (h *handler) next(t *testing.T) [3]string {
+	t.Helper()
+	select {
+	case m := <-h.msgs:
+		return m
+	case <-time.After(20 * time.Second):
+		t.Fatal("no message")
+	}
+	return [3]string{}
+}
+
+func (h *handler) waitClosed(t *testing.T) string {
+	t.Helper()
+	select {
+	case r := <-h.closed:
+		return r
+	case <-time.After(20 * time.Second):
+		t.Fatal("OnClose not called")
+	}
+	return ""
+}
+
+// The app speaks MQTT inside its own process through the gateway: no local port,
+// broker credentials only in the agent, sender identity stamped by the gateway.
+func TestMobileMQTT(t *testing.T) {
+	e := setup(t)
+	app, err := mobile.NewClient(filepath.Join(e.dir, "mqtt-app"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Pair(e.pairCode(t, "iphone", "midgard"), "alice", "Alice's iPhone"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.ConnectMQTT("mqtt", "app", 0, nil); err == nil {
+		t.Fatal("ConnectMQTT to a service that is not allowed must fail")
+	}
+	e.broker.Publish("midgard/tg/state", []byte(`{"state":"closed"}`), true)
+
+	h := newHandler()
+	var s *mobile.MQTTSession
+	eventually(t, func() (err error) {
+		s, err = app.ConnectMQTT("midgard", "app", 30, h)
+		return err
+	})
+	if !s.IsConnected() {
+		t.Fatal("not connected")
+	}
+	if err := s.Subscribe("midgard/#", 1); err != nil {
+		t.Fatal(err)
+	}
+	if m := h.next(t); m != [3]string{"midgard/tg/state", `{"state":"closed"}`, "true"} {
+		t.Fatalf("retained state: %v", m)
+	}
+	if err := s.Publish("midgard/tg/command", []byte(`{"action":"open"}`), 1, false); err != nil {
+		t.Fatal(err)
+	}
+	m := h.next(t)
+	var got map[string]any
+	if err := json.Unmarshal([]byte(m[1]), &got); err != nil || m[0] != "midgard/tg/command" {
+		t.Fatalf("command: %v %v", m, err)
+	}
+	id, _ := got["bifrost"].(map[string]any)
+	if got["action"] != "open" || id["device"] != "iphone" || id["user"] != "alice" {
+		t.Fatalf("gateway did not stamp the sender: %v", got)
+	}
+	if u := e.broker.Users(); len(u) == 0 || u[len(u)-1] != "midgard" {
+		t.Fatalf("broker users: %v", u)
+	}
+
+	// StopAll ends the session; OnClose gets an empty reason.
+	app.StopAll()
+	if r := h.waitClosed(t); r != "" {
+		t.Fatalf("OnClose after StopAll: %q", r)
+	}
+	if s.IsConnected() || s.Publish("midgard/tg/command", []byte("x"), 0, false) == nil {
+		t.Fatal("session alive after StopAll")
+	}
+
+	// A publish outside the allowlist makes the gateway end the session.
+	h2 := newHandler()
+	s2, err := app.ConnectMQTT("midgard", "", 0, h2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2.Publish("zigbee2mqtt/tor/set", []byte("open"), 0, false)
+	if r := h2.waitClosed(t); r == "" {
+		t.Fatal("denied publish must close the session with a reason")
+	}
+	if s2.IsConnected() {
+		t.Fatal("session alive after denied publish")
 	}
 }

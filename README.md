@@ -25,7 +25,8 @@ Remote access to a home lab without opening ports at home. One binary with three
 | `internal/update` | `bifrost upgrade`: fetch the latest release, verify the minisign signature, install with apt, health check, rollback |
 | `internal/web` | Hlidskjalf: web UI for devices and pairing (login, QR codes, revoke) |
 | `internal/wg` | In-process WireGuard tunnel (wireguard-go, netstack) |
-| `internal/client` | The app's tunnel core: pairing and local port forwarding |
+| `internal/client` | The app's tunnel core: pairing, service streams, local port forwarding for the CLI |
+| `internal/mqttc` | Small MQTT 3.1.1 client that runs inside the app over a service stream (QoS 0/1) |
 | `mobile` | gomobile binding of the tunnel core for iOS (`Bifrost.xcframework`) |
 | `internal/wire` | Framing, Noise handshake, `SecureConn`, TLS pinning |
 | `internal/keys` | Ed25519 (TLS), X25519 (Noise and WireGuard), fingerprints |
@@ -88,6 +89,9 @@ configs are in `/usr/share/doc/bifrost/examples/` (and in `examples/` here).
 5. Pair the "app": `bifrost client pair -state phone -code bifrost1:… [-user alice] [-device-name "Alice's iPhone"]`.
 6. Open a tunnel: `bifrost client forward -state phone -L mqtt=127.0.0.1:11883`,
    then e.g. `mosquitto_sub -h 127.0.0.1 -p 11883 -t 'home/#'`.
+   The local port accepts connections from **every process on that computer** and tunnels
+   them with the device's identity, so use `client forward` only for tests and admin work on
+   a machine you trust. Apps use the [mobile binding](#mobile-ios-binding), which opens no port.
 7. List and revoke devices: `bifrost devices`, `bifrost revoke -name iphone`.
 
 Bind the agent's admin API (`admin`) to `127.0.0.1` or the LAN only.
@@ -208,10 +212,15 @@ The Go API, with the generated Swift signatures:
 | `(*Client) IsPaired() bool` | `func isPaired() -> Bool` |
 | `(*Client) Info() string` | `func info() -> String` (JSON) |
 | `(*Client) Pair(code, user, deviceName string) (string, error)` | `func pair(_ code: String?, user: String?, deviceName: String?, error: NSErrorPointer) -> String` (JSON) |
-| `(*Client) StartForward(service string, port int) (int, error)` | `func startForward(_ service: String?, port: Int, ret0_: UnsafeMutablePointer<Int>?) throws` |
-| `(*Client) ForwardPort(service string) int` | `func forwardPort(_ service: String?) -> Int` |
-| `(*Client) StopForward(service string)` | `func stopForward(_ service: String?)` |
+| `(*Client) ConnectMQTT(service, clientID string, keepAlive int, h MessageHandler) (*MQTTSession, error)` | `func connectMQTT(_ service: String?, clientID: String?, keepAlive: Int, handler: MobileMessageHandlerProtocol?) throws -> MobileMQTTSession` |
+| `(*MQTTSession) Subscribe(filter string, qos int) error` | `func subscribe(_ filter: String?, qos: Int) throws` |
+| `(*MQTTSession) Unsubscribe(filter string) error` | `func unsubscribe(_ filter: String?) throws` |
+| `(*MQTTSession) Publish(topic string, payload []byte, qos int, retain bool) error` | `func publish(_ topic: String?, payload: Data?, qos: Int, retain: Bool) throws` |
+| `(*MQTTSession) IsConnected() bool` | `func isConnected() -> Bool` |
+| `(*MQTTSession) Close()` | `func close()` |
 | `(*Client) StopAll()` | `func stopAll()` |
+| `MessageHandler.OnMessage(topic string, payload []byte, retained bool)` | `func onMessage(_ topic: String?, payload: Data?, retained: Bool)` |
+| `MessageHandler.OnClose(reason string)` | `func onClose(_ reason: String?)` |
 | `(*Client) Probe(service string) error` | `func probe(_ service: String?) throws` |
 | `(*Client) Unpair() error` | `func unpair() throws` |
 
@@ -230,9 +239,18 @@ if !tunnel.isPaired() {
     print(result)   // {"name":"iphone","services":["mqtt"],"user":"alice",...}
 }
 
-var port = 0
-try tunnel.startForward("mqtt", port: 0, ret0_: &port)   // 0 = pick a free port
-// connect the MQTT client to 127.0.0.1:port
+final class Handler: NSObject, MobileMessageHandlerProtocol {
+    func onMessage(_ topic: String?, payload: Data?, retained: Bool) {
+        DispatchQueue.main.async { /* update state */ }
+    }
+    func onClose(_ reason: String?) {
+        // empty reason: closed by the app; otherwise reconnect and subscribe again
+    }
+}
+
+let mqtt = try tunnel.connectMQTT("midgard", clientID: "app", keepAlive: 30, handler: Handler())
+try mqtt.subscribe("midgard/#", qos: 1)
+try mqtt.publish("midgard/tg/command", payload: Data(#"{"action":"open"}"#.utf8), qos: 1, retain: false)
 ```
 
 Notes for the app:
@@ -240,11 +258,17 @@ Notes for the app:
 - `stateDir` holds `bifrost.key` (device keys, mode 0600) and `bifrost.json` (pairing state).
   Exclude it from iCloud backup if the identity should not move to another device.
 - `Info()` returns `{"paired", "relay", "agent_id", "services", "name", "user", "device_name",
-  "device_fp", "agent_fp", "paired_at", "forwards": {"mqtt": 54321}}`. `device_fp` exists
+  "device_fp", "agent_fp", "paired_at"}`. `device_fp` exists
   before pairing, so it can be shown for comparison with the agent log.
-- Every connection to the local port opens its own end-to-end tunnel. iOS suspends the app
-  in the background; call `stopAll()` there and `startForward` again when it becomes active
-  (with `port: 0` this may return a different port).
+- MQTT runs inside the app: `connectMQTT` opens one end-to-end tunnel to an
+  [MQTT gateway](#mqtt-gateway) and speaks MQTT 3.1.1 over it (clean session, QoS 0 and 1,
+  retained messages, keep-alive). The binding opens **no local port**, so other apps on the
+  device cannot use the tunnel or the device's identity. The app needs no broker password.
+- Handler calls arrive one at a time on a background thread. The handler may call
+  `publish`/`subscribe` itself. `onClose` is called exactly once per session.
+- iOS suspends the app in the background; call `stopAll()` there and `connectMQTT` plus the
+  subscriptions again when it becomes active. Do the same after `onClose` with a non-empty
+  reason (connection lost, or the gateway refused a topic).
 - `Probe("mqtt")` checks the whole path (relay, pin, device allowed, Noise, service reachable)
   with a 20 s timeout.
 - `Unpair()` deletes the pairing state and replaces the keys, but does not notify the agent;
