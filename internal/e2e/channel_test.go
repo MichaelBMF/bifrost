@@ -4,11 +4,11 @@ import (
 	"encoding/json"
 	"net"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/MichaelBMF/bifrost/internal/client"
 	"github.com/MichaelBMF/bifrost/internal/mqttc"
 	"github.com/MichaelBMF/bifrost/internal/services/mqtt"
 	"github.com/MichaelBMF/bifrost/mobile"
@@ -195,22 +195,25 @@ func TestChannelBrokerLost(t *testing.T) {
 	}
 }
 
-// Stream mode (all clients before v0.4.0) keeps working for the same service name.
+// Stream mode (tcp services, e.g. the CLI's `client forward`) keeps working.
 func TestStreamModeStillWorks(t *testing.T) {
 	e := setup(t)
-	app, _ := mobile.NewClient(filepath.Join(e.dir, "app"))
-	if _, err := app.Pair(e.pairCode(t, "iphone", "ha"), "", ""); err != nil {
+	cli, _ := client.Open(filepath.Join(e.dir, "cli"))
+	if _, err := cli.Pair(e.pairCode(t, "mac", "ha"), client.PairOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	var port int
-	eventually(t, func() error { var err error; port, err = app.StartForward("ha", 0); return err })
-	c, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	f, err := cli.Listen("ha", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
-	c.SetDeadline(time.Now().Add(20 * time.Second))
-	if err := roundTrip(c, 1000); err != nil {
-		t.Fatal(err)
-	}
+	defer f.Close()
+	eventually(t, func() error { // the relay learns the new device asynchronously
+		c, err := net.Dial("tcp", f.Addr().String())
+		if err != nil {
+			return err
+		}
+		defer c.Close()
+		c.SetDeadline(time.Now().Add(5 * time.Second))
+		return roundTrip(c, 1000)
+	})
 }

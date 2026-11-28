@@ -97,7 +97,6 @@ func setup(t *testing.T) *env {
 		Handlers: map[string]service.Service{
 			"mqtt":    mustService(tcp.New(echoServer(t))),
 			"ha":      mustService(tcp.New(echoServer(t))),
-			"mqttgw":  mustService(mqtt.New(gatewayConfig(t))),
 			"midgard": mustService(mqtt.New(midgardConfig(t, broker))),
 		}})
 	if err != nil {

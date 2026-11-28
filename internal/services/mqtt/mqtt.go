@@ -1,13 +1,14 @@
 // Package mqtt is the MQTT service: the agent talks to the MQTT broker on behalf of a
 // paired device. The device needs no broker credentials and no MQTT library.
 //
-// Config in asgard.json (the older "mqtt_gateways" section means the same):
+// Config in asgard.json (the older "mqtt_gateways" section is still read as the same):
 //
 //	"midgard": {"type": "mqtt", "broker": "127.0.0.1:1883", "username": "midgard",
 //	            "password_file": "${CREDENTIALS_DIRECTORY}/bifrost-mqtt-midgard",
 //	            "publish": ["midgard/+/command"], "subscribe": ["midgard/#"]}
 //
-// # Message mode (wire.ModeMsg)
+// The service only accepts message mode (wire.ModeMsg). The stream mode, in which
+// the device spoke MQTT 3.1.1 itself, was removed in bifrost v0.5.0.
 //
 // Each message is one JSON object. Device to agent:
 //
@@ -31,11 +32,6 @@
 //
 // Publish and subscribe are checked against the allowlists, and JSON objects that
 // the device publishes get "bifrost": {"device","user","user_bound"} from the pairing.
-//
-// # Stream mode (wire.ModeStream)
-//
-// The device speaks MQTT 3.1.1 itself (see package mqttgw). This is how apps before
-// bifrost v0.4.0 work; it will be removed once they have moved to message mode.
 package mqtt
 
 import (
@@ -77,18 +73,11 @@ func New(c *mqttgw.Config) (service.Service, error) {
 
 type svc struct{ cfg *mqttgw.Config }
 
-func (s *svc) Modes() []service.Mode { return []service.Mode{wire.ModeMsg, wire.ModeStream} }
+func (s *svc) Modes() []service.Mode { return []service.Mode{wire.ModeMsg} }
 func (s *svc) String() string        { return "mqtt " + s.cfg.Broker }
 
 func (s *svc) Serve(p service.Peer, mode service.Mode, ch service.Channel, accept func() error) error {
 	gp := mqttgw.Peer{Device: p.Device, User: p.User, UserBound: p.UserBound}
-	if mode == wire.ModeStream {
-		if err := accept(); err != nil {
-			ch.Close()
-			return err
-		}
-		return s.cfg.Serve(gp, ch)
-	}
 	return s.serveMessages(gp, ch, accept)
 }
 

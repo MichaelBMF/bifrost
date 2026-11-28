@@ -24,9 +24,6 @@ func TestUnpairedClient(t *testing.T) {
 	if in["paired"] != false || in["device_fp"] == "" {
 		t.Fatalf("unexpected info: %v", in)
 	}
-	if _, err := c.StartForward("mqtt", 0); err == nil {
-		t.Fatal("StartForward must fail before pairing")
-	}
 	if _, err := c.OpenChannel("mqtt", nopHandler{}); err == nil {
 		t.Fatal("OpenChannel must fail before pairing")
 	}
@@ -36,7 +33,6 @@ func TestUnpairedClient(t *testing.T) {
 	if _, err := c.Pair("garbage", "alice", "phone"); err == nil {
 		t.Fatal("Pair must reject an invalid code")
 	}
-	c.StopForward("mqtt") // no-op
 	c.StopAll()
 
 	// The device key is persistent across NewClient calls and replaced by Unpair.

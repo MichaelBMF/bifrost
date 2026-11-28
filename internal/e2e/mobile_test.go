@@ -4,8 +4,6 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,50 +82,8 @@ func TestMobileBinding(t *testing.T) {
 	if err := app.Probe("ha"); err == nil {
 		t.Fatal("probe of a service that is not allowed must fail")
 	}
-	if _, err := app.StartForward("ha", 0); err == nil {
-		t.Fatal("forwarding a service that is not allowed must fail")
-	}
-
-	port, err := app.StartForward("mqtt", 0)
-	if err != nil || port == 0 {
-		t.Fatalf("StartForward: %d %v", port, err)
-	}
-	if p2, _ := app.StartForward("mqtt", 0); p2 != port {
-		t.Fatalf("StartForward again returned %d, want %d", p2, port)
-	}
-	if app.ForwardPort("mqtt") != port {
-		t.Fatal("ForwardPort mismatch")
-	}
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	c, err := net.Dial("tcp", addr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := roundTrip(c, 100_000); err != nil {
-		t.Fatal(err)
-	}
-
-	// StopForward closes the listener and the active connection.
-	app.StopForward("mqtt")
-	if err := roundTrip(c, 100); err == nil {
-		t.Fatal("connection survived StopForward")
-	}
-	c.Close()
-	if c, err := net.DialTimeout("tcp", addr, time.Second); err == nil {
-		c.Close()
-		t.Fatal("listener survived StopForward")
-	}
-	if app.ForwardPort("mqtt") != 0 {
-		t.Fatal("ForwardPort after StopForward")
-	}
-
-	// A fixed port, then StopAll.
-	fixed := freePort(t)
-	_, ps, _ := net.SplitHostPort(fixed)
-	var want int
-	fmt.Sscan(ps, &want)
-	if got, err := app.StartForward("mqtt", want); err != nil || got != want {
-		t.Fatalf("StartForward fixed port: %d %v", got, err)
+	if _, err := app.OpenChannel("ha", nopHandler{}); err == nil {
+		t.Fatal("a channel to a service that is not allowed must fail")
 	}
 	app.StopAll()
 
@@ -223,3 +179,8 @@ func TestLegacyPairRequest(t *testing.T) {
 		t.Fatalf("unexpected device %+v", d)
 	}
 }
+
+type nopHandler struct{}
+
+func (nopHandler) OnMessage([]byte) {}
+func (nopHandler) OnClose(string)   {}
