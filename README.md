@@ -1,5 +1,7 @@
 # Bifrost – home lab relay
 
+![Overview: the Midgard app opens a message channel over mTLS to heimdall on the VPS, which passes it through WireGuard to asgard in the home lab; asgard hands it to the mqtt or tcp service. Noise encrypts end to end.](docs/overview.jpg)
+
 Remote access to a home lab without opening ports at home. One binary with three roles:
 **heimdall** (relay on a VPS), **asgard** (agent in the home lab) and **hlidskjalf**
 (web UI next to the agent). Design: the "Home Lab Relay: Architecture" document, variant v2.
