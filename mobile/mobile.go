@@ -17,8 +17,8 @@
 //	...
 //	c.StopAll()                                   // when the app goes to the background
 //
-// No local port is opened for channels, so no other app on the device can use the
-// tunnel. StartForward still exists for apps before v0.4.0 and will be removed.
+// The binding opens no local port, so no other app on the device can use the tunnel.
+// (StartForward, which did, was removed in v0.5.0.)
 //
 // This package must not import internal/agent, internal/relay, internal/wg
 // (wireguard-go, gVisor) or any service; see TestNoServerDependencies.
@@ -29,11 +29,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"sync"
 	"time"
 
@@ -54,8 +52,7 @@ type Client struct {
 	dir string
 
 	mu    sync.Mutex
-	fwd   map[string]*client.Forwarder // service -> active forwarder
-	chans map[*Channel]bool            // open channels
+	chans map[*Channel]bool // open channels
 }
 
 // NewClient opens (or creates) the device keys and pairing state in stateDir, e.g. a
@@ -72,32 +69,30 @@ func NewClient(stateDir string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{c: c, dir: stateDir, fwd: map[string]*client.Forwarder{}, chans: map[*Channel]bool{}}, nil
+	return &Client{c: c, dir: stateDir, chans: map[*Channel]bool{}}, nil
 }
 
 // IsPaired reports whether this device has been paired with an agent.
 func (m *Client) IsPaired() bool { return m.c.Paired() }
 
 type info struct {
-	Paired     bool           `json:"paired"`
-	Relay      string         `json:"relay,omitempty"`
-	AgentID    string         `json:"agent_id,omitempty"`
-	Services   []string       `json:"services"`
-	Name       string         `json:"name,omitempty"`
-	User       string         `json:"user,omitempty"`
-	DeviceName string         `json:"device_name,omitempty"`
-	DeviceFP   string         `json:"device_fp"`
-	AgentFP    string         `json:"agent_fp,omitempty"`
-	PairedAt   string         `json:"paired_at,omitempty"`
-	Forwards   map[string]int `json:"forwards"`
+	Paired     bool     `json:"paired"`
+	Relay      string   `json:"relay,omitempty"`
+	AgentID    string   `json:"agent_id,omitempty"`
+	Services   []string `json:"services"`
+	Name       string   `json:"name,omitempty"`
+	User       string   `json:"user,omitempty"`
+	DeviceName string   `json:"device_name,omitempty"`
+	DeviceFP   string   `json:"device_fp"`
+	AgentFP    string   `json:"agent_fp,omitempty"`
+	PairedAt   string   `json:"paired_at,omitempty"`
 }
 
 // Info returns the pairing state as JSON:
 //
 //	{"paired":true,"relay":"vps.example.org:443","agent_id":"homelab","services":["mqtt"],
 //	 "name":"iphone","user":"alice","device_name":"Alice's iPhone",
-//	 "device_fp":"ABCD-EFGH-IJKL-MNOP","agent_fp":"...","paired_at":"2026-11-21T12:00:00Z",
-//	 "forwards":{"mqtt":54321}}
+//	 "device_fp":"ABCD-EFGH-IJKL-MNOP","agent_fp":"...","paired_at":"2026-11-21T12:00:00Z"}
 //
 // "name" is the name the admin gave the device with `bifrost pair -name`.
 // "device_fp" is always set (the key exists before pairing), so it can be shown
@@ -106,7 +101,7 @@ func (m *Client) Info() string {
 	st := m.c.State()
 	in := info{Paired: st.AgentID != "", Relay: st.Relay, AgentID: st.AgentID, Services: st.Services,
 		Name: st.Name, User: st.User, DeviceName: st.DeviceName, DeviceFP: m.c.DeviceFingerprint(),
-		AgentFP: st.AgentFP, PairedAt: st.Paired, Forwards: m.forwards()}
+		AgentFP: st.AgentFP, PairedAt: st.Paired}
 	if in.Services == nil {
 		in.Services = []string{}
 	}
@@ -134,84 +129,12 @@ func (m *Client) Pair(code, user, deviceName string) (string, error) {
 	return string(b), nil
 }
 
-// StartForward listens on 127.0.0.1:port (port 0 picks a free port) and tunnels
-// every connection to service. It returns the bound port.
-//
-// Deprecated: any other app or process on the device can use that port with this
-// device's identity. Use OpenChannel; StartForward will be removed in v0.5.0. If service is already
-// forwarded, the existing port is returned when port is 0 or equal to it;
-// otherwise the old forward is stopped first.
-func (m *Client) StartForward(service string, port int) (int, error) {
-	st := m.c.State()
-	if st.AgentID == "" {
-		return 0, errors.New("not paired yet")
-	}
-	if !slices.Contains(st.Services, service) {
-		return 0, fmt.Errorf("service %q is not allowed for this device (allowed: %v)", service, st.Services)
-	}
-	if port < 0 || port > 65535 {
-		return 0, fmt.Errorf("invalid port %d", port)
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if f := m.fwd[service]; f != nil {
-		select {
-		case <-f.Done(): // listener died
-		default:
-			if cur := f.Addr().(*net.TCPAddr).Port; port == 0 || port == cur {
-				return cur, nil
-			}
-		}
-		f.Close()
-		delete(m.fwd, service)
-	}
-	f, err := m.c.Listen(service, net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
-	if err != nil {
-		return 0, err
-	}
-	m.fwd[service] = f
-	return f.Addr().(*net.TCPAddr).Port, nil
-}
-
-// ForwardPort returns the local port of an active forward for service, or 0.
-func (m *Client) ForwardPort(service string) int {
-	return m.forwards()[service]
-}
-
-func (m *Client) forwards() map[string]int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := map[string]int{}
-	for s, f := range m.fwd {
-		select {
-		case <-f.Done():
-		default:
-			out[s] = f.Addr().(*net.TCPAddr).Port
-		}
-	}
-	return out
-}
-
-// StopForward closes the listener for service and all its tunneled connections.
-func (m *Client) StopForward(service string) {
-	m.mu.Lock()
-	f := m.fwd[service]
-	delete(m.fwd, service)
-	m.mu.Unlock()
-	if f != nil {
-		f.Close()
-	}
-}
-
-// StopAll stops every forward and closes every channel.
+// StopAll closes every channel.
 func (m *Client) StopAll() {
 	m.mu.Lock()
-	fs, cs := m.fwd, m.chans
-	m.fwd, m.chans = map[string]*client.Forwarder{}, map[*Channel]bool{}
+	cs := m.chans
+	m.chans = map[*Channel]bool{}
 	m.mu.Unlock()
-	for _, f := range fs {
-		f.Close()
-	}
 	for ch := range cs {
 		ch.Close()
 	}

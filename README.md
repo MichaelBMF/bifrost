@@ -24,7 +24,7 @@ Remote access to a home lab without opening ports at home. One binary with three
 | `internal/service` | The boundary between transport and services: `Channel`, `Service`, type registry |
 | `internal/services/tcp` | Passthrough service: a channel becomes a TCP connection to a fixed target |
 | `internal/services/mqtt` | MQTT service: JSON messages from the device, MQTT to the broker, topic allowlist, sender identity |
-| `internal/mqttgw` | Stream mode of the MQTT service for apps before v0.4.0 (the device speaks MQTT itself) |
+| `internal/mqttgw` | Config and topic rules of the MQTT service (broker login, allowlists, sender identity) |
 | `internal/mqttc` | Small MQTT 3.1.1 client used by the MQTT service |
 | `internal/update` | `bifrost upgrade`: fetch the latest release, verify the minisign signature, install with apt, health check, rollback |
 | `internal/web` | Hlidskjalf: web UI for devices and pairing (login, QR codes, revoke) |
@@ -54,7 +54,8 @@ latest signed release (optionally daily via `bifrost-upgrade.timer`).
 | `bifrost-upgrade.timer` | both | optional daily self-update (04:00 plus up to one hour) |
 
 No unit is enabled on install. Configs live in `/etc/bifrost/*.json`; the package never
-writes or replaces them.
+writes or replaces them. On every install or upgrade the package restarts the services that
+are running and starts the two timers again if they are enabled but have failed.
 
 Debian has an unrelated package that is also called `bifrost`. From v0.3.1 on, this
 package has epoch 1 (`1:0.3.1`) and installs an apt pin (`/etc/apt/preferences.d/bifrost`)
@@ -192,33 +193,32 @@ unchanged. Use it for web UIs or for devices that speak a protocol themselves.
 The agent logs in to the broker with its own credentials (`username` and the password from
 `password_file`); the device has no broker password and needs no MQTT library.
 
-- **Message mode** (apps from v0.4.0). One JSON object per message. Device to agent:
+The service only has message mode: one JSON object per message. Device to agent:
 
-  ```json
-  {"op":"sub",   "id":1, "filter":"midgard/#", "qos":1}
-  {"op":"unsub", "id":2, "filter":"midgard/#"}
-  {"op":"pub",   "id":3, "topic":"midgard/tg/command", "payload":{"action":"open"}, "qos":1, "retain":false}
-  {"op":"ping",  "id":4}
-  ```
+```json
+{"op":"sub",   "id":1, "filter":"midgard/#", "qos":1}
+{"op":"unsub", "id":2, "filter":"midgard/#"}
+{"op":"pub",   "id":3, "topic":"midgard/tg/command", "payload":{"action":"open"}, "qos":1, "retain":false}
+{"op":"ping",  "id":4}
+```
 
-  A `pub` carries one of `payload` (any JSON value, sent as its JSON text), `payload_text`
-  (sent as is) or `payload_b64`. With an `id`, every op is answered with
-  `{"op":"ack","id":n}` or `{"op":"error","id":n,"error":"..."}`; a denied op does not end
-  the channel. Agent to device:
+A `pub` carries one of `payload` (any JSON value, sent as its JSON text), `payload_text`
+(sent as is) or `payload_b64`. With an `id`, every op is answered with
+`{"op":"ack","id":n}` or `{"op":"error","id":n,"error":"..."}`; a denied op does not end
+the channel. Agent to device:
 
-  ```json
-  {"op":"msg", "topic":"midgard/tg/state", "payload":{"state":"open"}, "retain":true}
-  ```
+```json
+{"op":"msg", "topic":"midgard/tg/state", "payload":{"state":"open"}, "retain":true}
+```
 
-  with `payload` if the MQTT payload is JSON, else `payload_text` or `payload_b64`. If the
-  broker connection ends, the device gets `{"op":"error","error":"broker connection lost"}`
-  and the channel closes.
-- **Stream mode** (apps before v0.4.0): the device speaks MQTT 3.1.1 through the channel;
-  the agent replaces the credentials in CONNECT, prefixes the client ID with the device
-  name and ends the session on a denied PUBLISH or SUBSCRIBE. It will be removed once all
-  apps use message mode.
+with `payload` if the MQTT payload is JSON, else `payload_text` or `payload_b64`. If the
+broker connection ends, the device gets `{"op":"error","error":"broker connection lost"}`
+and the channel closes.
 
-In both modes every PUBLISH must match a filter in `publish` and every SUBSCRIBE must lie
+The stream mode, in which apps before v0.4.0 spoke MQTT themselves through the channel, was
+removed in v0.5.0; such apps get "service does not support mode" and need an update.
+
+Every PUBLISH must match a filter in `publish` and every SUBSCRIBE must lie
 within a filter in `subscribe` (`+` and `#` allowed). **Sender identity:** every published
 JSON object gets a field set by the agent from the pairing, e.g.
 `"bifrost": {"device": "michael-iphone", "user": "michael", "user_bound": true}`. A
@@ -283,9 +283,6 @@ The Go API, with the generated Swift signatures:
 | `(*Channel) Send(msg []byte) error` | `func send(_ msg: Data?) throws` |
 | `(*Channel) Close()` / `IsOpen() bool` | `func close()` / `func isOpen() -> Bool` |
 | `MessageHandler.OnMessage(msg []byte)` / `OnClose(err string)` | `func onMessage(_ msg: Data?)` / `func onClose(_ err: String?)` |
-| `(*Client) StartForward(service string, port int) (int, error)` (deprecated) | `func startForward(_ service: String?, port: Int, ret0_: UnsafeMutablePointer<Int>?) throws` |
-| `(*Client) ForwardPort(service string) int` | `func forwardPort(_ service: String?) -> Int` |
-| `(*Client) StopForward(service string)` | `func stopForward(_ service: String?)` |
 | `(*Client) StopAll()` | `func stopAll()` |
 | `(*Client) Probe(service string) error` | `func probe(_ service: String?) throws` |
 | `(*Client) Unpair() error` | `func unpair() throws` |
@@ -322,14 +319,13 @@ Notes for the app:
 - `stateDir` holds `bifrost.key` (device keys, mode 0600) and `bifrost.json` (pairing state).
   Exclude it from iCloud backup if the identity should not move to another device.
 - `Info()` returns `{"paired", "relay", "agent_id", "services", "name", "user", "device_name",
-  "device_fp", "agent_fp", "paired_at", "forwards": {"mqtt": 54321}}`. `device_fp` exists
+  "device_fp", "agent_fp", "paired_at"}`. `device_fp` exists
   before pairing, so it can be shown for comparison with the agent log.
 - A channel opens no port: its messages stay inside the app's process, so no other app
   on the device can use the tunnel. Each channel is its own end-to-end connection. iOS
-  suspends the app in the background; call `stopAll()` there (it closes channels and
-  forwards) and open the channel again when the app becomes active.
-- `StartForward` opens a port on 127.0.0.1 that any app on the device could use. It is
-  kept for apps before v0.4.0 and will be removed.
+  suspends the app in the background; call `stopAll()` there (it closes all channels) and open the channel again when the app becomes active.
+- There is no local port forward in the binding any more (`StartForward` was removed in
+  v0.5.0). Port forwards are only for the CLI (`bifrost client forward`, tcp services).
 - `Probe("mqtt")` checks the whole path (relay, pin, device allowed, Noise, service reachable)
   with a 20 s timeout.
 - `Unpair()` deletes the pairing state and replaces the keys, but does not notify the agent;

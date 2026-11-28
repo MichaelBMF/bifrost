@@ -19,6 +19,15 @@ if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-remov
 			# shellcheck disable=SC2086
 			systemctl try-restart $UNITS || true
 		fi
+		# A timer fails for good ("Unit to trigger vanished") if its service is gone
+		# for a moment, e.g. while a manual install is replaced by this package, and
+		# nothing starts it again. Bring back every timer the admin has enabled.
+		for t in bifrost-check.timer bifrost-upgrade.timer; do
+			if systemctl is-enabled --quiet "$t" 2>/dev/null; then
+				systemctl reset-failed "$t" 2>/dev/null || true
+				systemctl start "$t" || true
+			fi
+		done
 	fi
 fi
 
